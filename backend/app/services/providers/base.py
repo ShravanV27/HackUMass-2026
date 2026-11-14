@@ -29,7 +29,7 @@ class DataProvider(ABC):
         raise NotImplementedError
 
     def list_scheduled_bills(self, customer_id: str) -> list[ScheduledBill]:
-        """Known upcoming bills. Live adapters may return [] until wired."""
+        """Known upcoming bills. Default empty — never invent obligations."""
         return []
 
     @abstractmethod

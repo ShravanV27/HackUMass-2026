@@ -114,6 +114,18 @@
       "category": "Transfer",
       "posted_at": "2026-11-08T11:00:00Z",
       "counterparty_account_id": "acct-checking-001"
+    },
+    {
+      "transaction_id": "txn-exp-test-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-500.00",
+      "kind": "expense",
+      "status": "posted",
+      "description": "Test shopping purchase",
+      "category": "Shopping",
+      "posted_at": "2026-11-12T15:00:00Z",
+      "counterparty_account_id": null
     }
   ],
   "scheduled_bills": [

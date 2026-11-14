@@ -9,7 +9,7 @@ struct DashboardView: View {
             Group {
                 switch viewModel.state {
                 case .idle, .loading:
-                    ProgressView("Loading demo dashboard…")
+                    ProgressView(viewModel.loadingMessage)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .failed(let message):
                     ContentUnavailableView(
@@ -18,7 +18,15 @@ struct DashboardView: View {
                         description: Text(message)
                     )
                 case .loaded(let dashboard):
-                    dashboardContent(dashboard)
+                    if dashboard.accounts.isEmpty {
+                        ContentUnavailableView(
+                            "No accounts yet",
+                            systemImage: "building.columns",
+                            description: Text(emptyDataCopy(for: dashboard.mode))
+                        )
+                    } else {
+                        dashboardContent(dashboard)
+                    }
                 }
             }
             .navigationTitle("Finance Demo")
@@ -39,16 +47,16 @@ struct DashboardView: View {
     private func dashboardContent(_ dashboard: DashboardResponse) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Customer \(dashboard.customerId)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    modeBadge(dashboard.mode)
+                    Text("Customer \(dashboard.customerId)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
 
-                Text(dashboard.mode.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.15))
-                    .clipShape(Capsule())
+                Text(dataSourceCaption(for: dashboard.mode))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Accounts")
@@ -57,7 +65,7 @@ struct DashboardView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(account.name)
-                                Text(account.accountId)
+                                Text(account.accountType)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -84,15 +92,29 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("14-day forecast")
                         .font(.headline)
-                    Chart(dashboard.forecast.points) { point in
-                        LineMark(
-                            x: .value("Day", point.date),
-                            y: .value("Balance", NSDecimalNumber(decimal: point.projectedBalance).doubleValue)
-                        )
+                    Chart {
+                        ForEach(dashboard.forecast.points) { point in
+                            if let day = ChartDate.parse(point.date) {
+                                LineMark(
+                                    x: .value("Day", day),
+                                    y: .value(
+                                        "Balance",
+                                        NSDecimalNumber(decimal: point.projectedBalance).doubleValue
+                                    )
+                                )
+                            }
+                        }
                     }
                     .frame(height: 180)
                     .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 4))
+                        AxisMarks(values: .stride(by: .day, count: 3)) { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    Text(date, format: ChartDate.axisFormat)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -108,6 +130,33 @@ struct DashboardView: View {
         }
     }
 
+    private func modeBadge(_ mode: String) -> some View {
+        Text(modeLabel(mode))
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.15))
+            .clipShape(Capsule())
+    }
+
+    private func modeLabel(_ mode: String) -> String {
+        mode.lowercased() == "live" ? "LIVE · NESSIE SANDBOX" : "MOCK DATA"
+    }
+
+    private func dataSourceCaption(for mode: String) -> String {
+        if mode.lowercased() == "live" {
+            return "Balances and transactions synced from Nessie sandbox into TigerData. Credentials stay on the server."
+        }
+        return "Using local demo fixtures. Toggle USE_MOCK_DATA=false on the backend for live Nessie data."
+    }
+
+    private func emptyDataCopy(for mode: String) -> String {
+        if mode.lowercased() == "live" {
+            return "No accounts returned from the live Nessie sync. Check NESSIE_CUSTOMER_ID mapping and refresh."
+        }
+        return "Demo fixtures returned no accounts."
+    }
+
     private func labeledRow(_ title: String, _ value: Decimal) -> some View {
         HStack {
             Text(title)
@@ -115,6 +164,20 @@ struct DashboardView: View {
             Text(value, format: .currency(code: "USD"))
         }
         .font(.subheadline)
+    }
+}
+
+enum ChartDate {
+    static let axisFormat = Date.FormatStyle()
+        .month(.abbreviated)
+        .day()
+
+    static func parse(_ raw: String) -> Date? {
+        let isoDay = Date.ISO8601FormatStyle().year().month().day()
+        if let date = try? Date(raw, strategy: isoDay) {
+            return date
+        }
+        return try? Date(raw, strategy: Date.ISO8601FormatStyle())
     }
 }
 
@@ -130,10 +193,18 @@ final class DashboardViewModel {
 
     private let client = APIClient()
     var state: State = .idle
+    var loadingMessage = "Loading dashboard…"
 
     func load() async {
         state = .loading
+        loadingMessage = "Loading dashboard…"
         do {
+            let health = try? await client.fetchHealth()
+            if let mode = health?.mode.lowercased() {
+                loadingMessage = mode == "live"
+                    ? "Loading live Nessie dashboard…"
+                    : "Loading mock dashboard…"
+            }
             let dashboard = try await client.fetchDashboard()
             state = .loaded(dashboard)
         } catch {

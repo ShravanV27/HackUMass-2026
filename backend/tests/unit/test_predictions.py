@@ -188,3 +188,120 @@ def test_invalid_horizon_raises() -> None:
             as_of=date(2026, 11, 14),
             horizon_days=0,
         )
+
+
+def test_credit_card_balance_excluded_from_spendable_cash() -> None:
+    accounts = [
+        _account("1000.00"),
+        Account(
+            account_id="cc1",
+            customer_id="c1",
+            name="Travel Card",
+            account_type="Credit Card",
+            balance=Decimal("-500.00"),
+        ),
+    ]
+    forecast = build_cashflow_forecast(
+        customer_id="c1",
+        accounts=accounts,
+        transactions=[],
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        horizon_days=2,
+        lookback_days=30,
+    )
+    assert forecast.starting_balance == Decimal("1000.00")
+    safe = compute_safe_to_spend(
+        customer_id="c1",
+        accounts=accounts,
+        transactions=[],
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        horizon_days=2,
+        lookback_days=30,
+        minimum_buffer=Decimal("0.00"),
+    )
+    assert safe.available_balance == Decimal("1000.00")
+
+
+def test_empty_history_and_bills_are_graceful() -> None:
+    forecast = build_cashflow_forecast(
+        customer_id="c1",
+        accounts=[_account("200.00")],
+        transactions=[],
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        horizon_days=3,
+        lookback_days=30,
+    )
+    assert forecast.daily_estimated_spend == Decimal("0.00")
+    assert forecast.scheduled_bills_total == Decimal("0.00")
+    assert forecast.ending_balance == Decimal("200.00")
+
+
+def test_transfers_and_pending_excluded_from_estimated_spend() -> None:
+    txns = [
+        _expense(1, "300.00", "Food"),
+        Transaction(
+            transaction_id="xfer",
+            customer_id="c1",
+            account_id="a1",
+            amount=Decimal("-100.00"),
+            kind=TransactionKind.TRANSFER,
+            status=TransactionStatus.POSTED,
+            description="to savings",
+            category="Transfer",
+            posted_at=datetime(2026, 11, 2, tzinfo=timezone.utc),
+        ),
+        Transaction(
+            transaction_id="pend",
+            customer_id="c1",
+            account_id="a1",
+            amount=Decimal("-80.00"),
+            kind=TransactionKind.EXPENSE,
+            status=TransactionStatus.PENDING,
+            description="hold",
+            category="Food",
+            posted_at=datetime(2026, 11, 13, tzinfo=timezone.utc),
+        ),
+    ]
+    forecast = build_cashflow_forecast(
+        customer_id="c1",
+        accounts=[_account("1000.00")],
+        transactions=txns,
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        horizon_days=1,
+        lookback_days=30,
+    )
+    assert forecast.daily_estimated_spend == Decimal("10.00")
+
+
+def test_known_bill_category_excluded_even_outside_horizon() -> None:
+    """Historical rent must not inflate daily est when rent bill is known."""
+    bills = [
+        ScheduledBill(
+            bill_id="rent",
+            customer_id="c1",
+            account_id="a1",
+            name="Rent",
+            amount=Decimal("980.00"),
+            category="Housing",
+            next_due_date=date(2026, 12, 5),  # outside 14-day horizon from Nov 14
+        )
+    ]
+    txns = [
+        _expense(5, "980.00", "Housing"),
+        _expense(1, "300.00", "Food"),
+    ]
+    forecast = build_cashflow_forecast(
+        customer_id="c1",
+        accounts=[_account("2000.00")],
+        transactions=txns,
+        scheduled_bills=bills,
+        as_of=date(2026, 11, 14),
+        horizon_days=14,
+        lookback_days=30,
+    )
+    assert forecast.scheduled_bills_total == Decimal("0.00")
+    assert forecast.daily_estimated_spend == Decimal("10.00")

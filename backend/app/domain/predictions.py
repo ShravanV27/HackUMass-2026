@@ -4,8 +4,10 @@ Rules:
 - Never invent future income or bills.
 - Scheduled bills are known obligations only.
 - Estimated spend is derived from historical posted discretionary expenses.
-- Categories covered by scheduled bills in the horizon are excluded from
-  estimated spend to avoid double-counting.
+- Categories covered by *any* known scheduled bills are excluded from
+  estimated spend to avoid double-counting rent/utilities already scheduled.
+- Transfers and pending transactions never inflate estimated spend / drift.
+- Credit-card balances are excluded from spendable cash.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.domain.calculations import spendable_cash_balance
 from app.models.schemas import (
     Account,
     CashflowDayPoint,
@@ -63,12 +66,19 @@ def daily_estimated_spend(
     as_of: date,
     lookback_days: int,
     exclude_categories: set[str],
+    exclude_description_tokens: set[str] | None = None,
 ) -> Decimal:
-    """Average daily posted discretionary spend over the lookback window."""
+    """Average daily posted discretionary spend over the lookback window.
+
+    Missing history yields 0.00 (never invents spend). Transfers/pending are
+    excluded. Bill categories and bill-name tokens are excluded to avoid
+    double-counting confirmed obligations.
+    """
     if lookback_days <= 0:
         raise ValueError("lookback_days must be positive")
 
     window_start = as_of - timedelta(days=lookback_days)
+    tokens = {t.lower() for t in (exclude_description_tokens or set()) if t}
     total = ZERO
     for txn in transactions:
         if txn.customer_id != customer_id:
@@ -78,6 +88,8 @@ def daily_estimated_spend(
         if txn.status != TransactionStatus.POSTED:
             continue
         if txn.category in exclude_categories:
+            continue
+        if tokens and any(token in txn.description.lower() for token in tokens):
             continue
         txn_day = _as_utc_date(txn.posted_at)
         if window_start < txn_day <= as_of:
@@ -98,19 +110,25 @@ def build_cashflow_forecast(
     if horizon_days < 1:
         raise ValueError("horizon_days must be >= 1")
 
-    starting = _money(sum((a.balance for a in accounts), ZERO))
+    # Cash only — credit-card debt must not count as spendable runway.
+    starting = spendable_cash_balance(accounts)
+    customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
     due = bills_due_in_horizon(
-        [b for b in scheduled_bills if b.customer_id == customer_id],
+        customer_bills,
         as_of=as_of,
         horizon_days=horizon_days,
     )
-    exclude = {b.category for b in due}
+    # Exclude categories for *all* known bills (not only those due in-horizon)
+    # so historical rent/utilities do not inflate discretionary estimates.
+    exclude = {b.category for b in customer_bills} | {"Bills"}
+    bill_names = {b.name for b in customer_bills}
     daily_est = daily_estimated_spend(
         transactions,
         customer_id=customer_id,
         as_of=as_of,
         lookback_days=lookback_days,
         exclude_categories=exclude,
+        exclude_description_tokens=bill_names,
     )
 
     bills_by_day: dict[date, list[ScheduledBill]] = {}
@@ -182,7 +200,7 @@ def compute_safe_to_spend(
     if minimum_buffer < 0:
         raise ValueError("minimum_buffer must be non-negative")
 
-    available = _money(sum((a.balance for a in accounts), ZERO))
+    available = spendable_cash_balance(accounts)
     pending_expenses = ZERO
     pending_income = ZERO
     for txn in transactions:
@@ -190,6 +208,7 @@ def compute_safe_to_spend(
             continue
         if txn.status != TransactionStatus.PENDING:
             continue
+        # Transfers never count as pending income/expense for safe-to-spend.
         if txn.kind == TransactionKind.EXPENSE:
             pending_expenses += abs(txn.amount)
         elif txn.kind == TransactionKind.INCOME:
@@ -309,7 +328,13 @@ def simulate_what_if_purchase(
     after_safe = _money(before.safe_to_spend - purchase_amount)
     affordable = after_safe >= ZERO
 
-    # Apply purchase as an immediate balance reduction for min-balance check.
+    # Apply purchase against the first non-credit account for min-balance check.
+    cash_indexes = [
+        idx
+        for idx, a in enumerate(accounts)
+        if "credit" not in a.account_type.strip().lower()
+    ]
+    target_idx = cash_indexes[0] if cash_indexes else 0
     adjusted_accounts = [
         Account(
             account_id=a.account_id,
@@ -318,14 +343,14 @@ def simulate_what_if_purchase(
             account_type=a.account_type,
             balance=(
                 _money(a.balance - purchase_amount)
-                if idx == 0
+                if idx == target_idx
                 else a.balance
             ),
             currency=a.currency,
         )
         for idx, a in enumerate(accounts)
     ]
-    if not adjusted_accounts:
+    if not cash_indexes:
         projected_min = _money(-purchase_amount)
     else:
         forecast = build_cashflow_forecast(

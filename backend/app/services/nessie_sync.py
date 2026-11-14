@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.config import Settings
 from app.db.repository import TigerRepository
-from app.services.nessie_client import NessieClient
+from app.services.nessie_client import AccountCollection, NessieClient
 from app.services.nessie_mapper import (
     collect_account_transactions,
     collect_from_transaction_feed,
@@ -18,8 +18,20 @@ from app.services.nessie_mapper import (
 class SyncResult:
     accounts_upserted: int
     transactions_upserted: int
+    accounts_deleted: int
+    transactions_deleted: int
+    reconciled: bool
     nessie_customer_id: str
     app_customer_id: str
+
+
+def resolve_nessie_customer_id(settings: Settings, app_customer_id: str) -> str:
+    """Map app DEMO_CUSTOMER_ID → NESSIE_CUSTOMER_ID (fallback to demo id)."""
+    if app_customer_id != settings.demo_customer_id:
+        raise PermissionError(
+            "Live sync is only enabled for the authenticated demo customer"
+        )
+    return settings.nessie_customer_id or app_customer_id
 
 
 class NessieSyncService:
@@ -36,25 +48,19 @@ class NessieSyncService:
         self._repo = repo
 
     def resolve_nessie_customer_id(self, app_customer_id: str) -> str:
-        if app_customer_id != self._settings.demo_customer_id:
-            raise PermissionError(
-                "Live sync is only enabled for the authenticated demo customer"
-            )
-        return self._settings.nessie_customer_id or app_customer_id
+        return resolve_nessie_customer_id(self._settings, app_customer_id)
 
     def sync_customer(self, app_customer_id: str) -> SyncResult:
-        self._repo.ensure_schema()
+        self._repo.ensure_schema(require_hypertable=True)
         nessie_customer_id = self.resolve_nessie_customer_id(app_customer_id)
 
-        raw_accounts = self._nessie.list_accounts_for_customer(nessie_customer_id)
-        if not raw_accounts and not self._settings.nessie_customer_id:
-            # Fallback for sandboxes that only expose /accounts.
-            raw_accounts = self._nessie.list_all_accounts()
+        # Fetch first — if this raises, TigerData is left unchanged (aside from schema).
+        collection = self._fetch_accounts(nessie_customer_id)
 
         accounts = [
-            map_account(row, app_customer_id=app_customer_id) for row in raw_accounts
+            map_account(row, app_customer_id=app_customer_id)
+            for row in collection.items
         ]
-        accounts_upserted = self._repo.upsert_accounts(accounts)
 
         all_txns = []
         for account in accounts:
@@ -64,13 +70,29 @@ class NessieSyncService:
                     account_id=account.account_id,
                 )
             )
-        transactions_upserted = self._repo.upsert_transactions(all_txns)
+
+        write = self._repo.commit_customer_sync(
+            customer_id=app_customer_id,
+            accounts=accounts,
+            transactions=all_txns,
+            reconcile=collection.complete,
+        )
         return SyncResult(
-            accounts_upserted=accounts_upserted,
-            transactions_upserted=transactions_upserted,
+            accounts_upserted=write.accounts_upserted,
+            transactions_upserted=write.transactions_upserted,
+            accounts_deleted=write.accounts_deleted,
+            transactions_deleted=write.transactions_deleted,
+            reconciled=write.reconciled,
             nessie_customer_id=nessie_customer_id,
             app_customer_id=app_customer_id,
         )
+
+    def _fetch_accounts(self, nessie_customer_id: str) -> AccountCollection:
+        collection = self._nessie.fetch_accounts_for_customer(nessie_customer_id)
+        if not collection.items and not self._settings.nessie_customer_id:
+            # Fallback for sandboxes that only expose /accounts.
+            return self._nessie.fetch_all_accounts()
+        return collection
 
     def _transactions_for_account(
         self,

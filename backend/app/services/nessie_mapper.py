@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from app.models.schemas import (
     Account,
+    ScheduledBill,
     Transaction,
     TransactionKind,
     TransactionStatus,
@@ -245,6 +246,138 @@ def collect_from_transaction_feed(
         )
         for row in feed
     ]
+
+
+def map_bill(
+    raw: dict[str, Any],
+    *,
+    app_customer_id: str,
+    as_of: date | None = None,
+) -> ScheduledBill | None:
+    """Map a Nessie bill into a ScheduledBill, or None if not an upcoming obligation.
+
+    Skips cancelled/completed bills. Uses upcoming_payment_date when present;
+    otherwise derives the next due date from recurring_date (day-of-month).
+    """
+    bill_id = str(raw.get("_id") or raw.get("id") or "")
+    if not bill_id:
+        raise ValueError("Nessie bill missing _id")
+
+    status = str(raw.get("status") or "").strip().lower()
+    if status in {"cancelled", "canceled", "completed", "paid"}:
+        return None
+
+    account_id = str(raw.get("account_id") or raw.get("accountId") or "")
+    if not account_id:
+        return None
+
+    amount = abs(
+        _money_field(
+            raw,
+            dollar_keys=("payment_amount", "amount"),
+            cents_keys=("payment_amount_cents", "amount_cents"),
+        )
+    )
+    if amount <= 0:
+        return None
+
+    today = as_of or datetime.now(tz=timezone.utc).date()
+    next_due = _bill_next_due_date(raw, today=today)
+    if next_due is None:
+        return None
+
+    name = str(
+        raw.get("nickname")
+        or raw.get("payee")
+        or raw.get("description")
+        or "Bill"
+    )
+    category = _bill_category(name, raw)
+    cadence = "monthly" if raw.get("recurring_date") is not None else "one_time"
+
+    return ScheduledBill(
+        bill_id=f"bill:{bill_id}",
+        customer_id=app_customer_id,
+        account_id=account_id,
+        name=name,
+        amount=_quantize_money(amount),
+        category=category,
+        next_due_date=next_due,
+        cadence=cadence,
+    )
+
+
+def collect_scheduled_bills(
+    rows: list[dict[str, Any]],
+    *,
+    app_customer_id: str,
+    as_of: date | None = None,
+) -> list[ScheduledBill]:
+    bills: list[ScheduledBill] = []
+    for row in rows:
+        mapped = map_bill(row, app_customer_id=app_customer_id, as_of=as_of)
+        if mapped is not None:
+            bills.append(mapped)
+    return bills
+
+
+def _bill_next_due_date(raw: dict[str, Any], *, today: date) -> date | None:
+    for key in ("upcoming_payment_date", "payment_date", "due_date"):
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        parsed = _parse_dt(value).date()
+        if parsed > today:
+            return parsed
+        # Past one-time payment dates are not upcoming obligations.
+        if raw.get("recurring_date") is None and key != "upcoming_payment_date":
+            continue
+
+    recurring = raw.get("recurring_date")
+    if recurring is None or recurring == "":
+        return None
+    try:
+        day = int(recurring)
+    except (TypeError, ValueError):
+        return None
+    if day < 1 or day > 31:
+        return None
+
+    # Next occurrence of this day-of-month strictly after today.
+    year, month = today.year, today.month
+    for _ in range(0, 14):
+        candidate_day = min(day, _days_in_month(year, month))
+        candidate = date(year, month, candidate_day)
+        if candidate > today:
+            return candidate
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+    return None
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        nxt = date(year + 1, 1, 1)
+    else:
+        nxt = date(year, month + 1, 1)
+    return (nxt - timedelta(days=1)).day
+
+
+def _bill_category(name: str, raw: dict[str, Any]) -> str:
+    explicit = raw.get("category")
+    if explicit:
+        return str(explicit)
+    text = name.strip().lower()
+    if any(token in text for token in ("rent", "mortgage", "housing")):
+        return "Housing"
+    if any(token in text for token in ("internet", "phone", "utility", "electric", "gas", "water")):
+        return "Utilities"
+    if any(token in text for token in ("insurance",)):
+        return "Insurance"
+    return "Bills"
 
 
 def _txn_id(raw: dict[str, Any], *, prefix: str) -> str:

@@ -174,8 +174,18 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
     session.get.side_effect = fake_get
     nessie = NessieClient(settings, session=session)
     repo = MagicMock(spec=TigerRepository)
-    repo.upsert_accounts.side_effect = lambda accounts: len(accounts)
-    repo.upsert_transactions.side_effect = lambda txns: len(txns)
+
+    from app.db.repository import CustomerSyncWriteResult
+
+    repo.commit_customer_sync.side_effect = (
+        lambda **kwargs: CustomerSyncWriteResult(
+            accounts_upserted=len(kwargs["accounts"]),
+            transactions_upserted=len(kwargs["transactions"]),
+            accounts_deleted=0,
+            transactions_deleted=0,
+            reconciled=kwargs["reconcile"],
+        )
+    )
 
     result = NessieSyncService(settings, nessie, repo).sync_customer(
         "demo-customer-001"
@@ -183,7 +193,8 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
 
     assert result.accounts_upserted == 1
     assert result.transactions_upserted == 2
-    mapped = repo.upsert_accounts.call_args.args[0][0]
+    assert result.reconciled is True
+    mapped = repo.commit_customer_sync.call_args.kwargs["accounts"][0]
     assert mapped.account_id == "acct_01m7djs39b2adt8vfg8ztzpw0f"
     assert mapped.name == "Main"
 
@@ -219,3 +230,38 @@ def test_list_account_transactions_uses_v2_path(settings: Settings) -> None:
     assert session.get.call_args.args[0].endswith(
         "/accounts/acct_01abc/transactions"
     )
+
+
+def test_list_bills_for_customer_unwraps_items(settings: Settings) -> None:
+    session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b'{"items":[{"_id":"bill-1"}]}'
+    response.json.return_value = {
+        "items": [
+            {
+                "_id": "bill-1",
+                "status": "pending",
+                "payment_amount": 45,
+                "upcoming_payment_date": "2026-11-20",
+                "account_id": "acc-1",
+            }
+        ]
+    }
+    session.get.return_value = response
+
+    client = NessieClient(settings, session=session)
+    rows = client.list_bills_for_customer("nessie-cust-1")
+    assert rows[0]["_id"] == "bill-1"
+    assert session.get.call_args.args[0].endswith("/customers/nessie-cust-1/bills")
+
+
+def test_as_list_unwraps_bills_key() -> None:
+    rows = _as_list(
+        {
+            "bills": [
+                {"_id": "b1", "payment_amount": 10, "account_id": "a1"},
+            ]
+        }
+    )
+    assert rows[0]["_id"] == "b1"

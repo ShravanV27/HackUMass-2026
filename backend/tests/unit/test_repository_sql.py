@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from app.db.repository import _split_sql
+from unittest.mock import MagicMock
+
+import pytest
+
+from app.db.repository import TigerRepository, TigerSchemaError, _split_sql
 
 
 def test_schema_sql_splits_and_includes_hypertable() -> None:
@@ -16,3 +20,15 @@ def test_schema_sql_splits_and_includes_hypertable() -> None:
     assert any("CREATE TABLE IF NOT EXISTS transactions" in p for p in parts)
     assert any("create_hypertable" in p.lower() for p in parts)
     assert any("PRIMARY KEY (transaction_id, posted_at)" in p for p in parts)
+
+
+def test_ensure_schema_requires_hypertable_when_requested() -> None:
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    # Table DDL succeeds; hypertable check returns no row.
+    cursor.fetchone.return_value = None
+
+    repo = TigerRepository(conn)
+    with pytest.raises(TigerSchemaError, match="hypertable"):
+        repo.ensure_schema(require_hypertable=True)

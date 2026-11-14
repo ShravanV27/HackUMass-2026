@@ -35,7 +35,9 @@ class GeminiClient:
         prompt = (
             "You are a concise personal-finance assistant. "
             "Explain the following precomputed metrics in 2 short sentences. "
-            "Do not invent numbers, accounts, or transactions. "
+            "Use only the numbers provided — do not invent balances, income, "
+            "bills, accounts, or transactions. "
+            "Do not suggest or execute transfers or payments. "
             "Do not give investment advice. "
             f"Customer id: {customer_id}. "
             f"Metrics: {summary_text}"

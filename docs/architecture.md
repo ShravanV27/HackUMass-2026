@@ -14,27 +14,27 @@ The server resolves the current customer from server-side context (fixed `DEMO_C
 
 `USE_MOCK_DATA=true` (default) uses fixtures. Live mode (`USE_MOCK_DATA=false`):
 
-1. **Nessie** (GET only) — accounts + `/accounts/{id}/transactions` (v2). Classic `/purchases|deposits|withdrawals|transfers` are POST-only on v2-prod and return 405 for GET.
-2. **TigerData** — idempotent upsert into `accounts` + `transactions` hypertable
-3. **Domain math** — still the source of truth for dashboard money-flow / forecast
-4. **Gemini** — narrates precomputed metrics via `GEMINI_MODEL` (does not invent numbers)
+1. **Nessie** (GET only) — accounts + `/accounts/{id}/transactions` (v2) + `/customers/{id}/bills`
+2. **TigerData** — idempotent upsert into `accounts` + `transactions` hypertable (required; no silent table fallback)
+3. **Domain math** — source of truth for dashboard money-flow / M5 forecasts
+4. **Gemini** — narrates precomputed metrics via `GEMINI_MODEL` (does not invent numbers or execute transfers)
 
 Map Nessie sandbox customers with optional `NESSIE_CUSTOMER_ID` → app `DEMO_CUSTOMER_ID`.
 
 ## SQL analytics
 
-`GET /customers/{id}/analytics/spending` uses TigerData SQL in live mode and in-memory aggregation in mock mode.
+`GET /customers/{id}/analytics/spending` uses TigerData SQL in live mode (category rollups + daily series; continuous aggregate `daily_spending` when Timescale supports it) and in-memory aggregation in mock mode.
 
-## M5 predictions (mock-first)
+## M5 predictions
 
-New routes under `/customers/{id}/predictions/*` (existing `/forecast` unchanged):
+Routes under `/customers/{id}/predictions/*` (existing `/forecast` unchanged):
 
 - `GET .../cashflow` — 14-day runway with **scheduled bills** vs **estimated spend**
-- `GET .../safe-to-spend` — buffer-aware discretionary capacity
+- `GET .../safe-to-spend` — buffer-aware discretionary capacity (cash accounts only)
 - `GET .../drift` — recent vs baseline spend
 - `POST .../what-if` — affordability simulation
 
-Scheduled bills come from mock fixtures today. Live provider returns `[]` until teammates wire bill sources. No invented future income.
+Scheduled bills: mock fixtures in mock mode; live mode maps Nessie bills (`upcoming_payment_date` / `recurring_date`). Empty bills/history are valid and never invented. Credit-card balances are excluded from spendable cash. Transfers and pending items are excluded from estimated spend / drift.
 
 ## CORS
 

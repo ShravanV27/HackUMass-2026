@@ -5,10 +5,14 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.models.schemas import TransactionKind, TransactionStatus
+from datetime import date
+
 from app.services.nessie_mapper import (
     collect_account_transactions,
     collect_from_transaction_feed,
+    collect_scheduled_bills,
     map_account,
+    map_bill,
     map_deposit,
     map_purchase,
     map_transfer,
@@ -244,3 +248,103 @@ def test_v2_feed_with_amount_cents() -> None:
     )
     assert txns[0].amount == Decimal("-45.99")
     assert txns[0].kind == TransactionKind.EXPENSE
+
+
+def test_map_bill_upcoming_payment_date() -> None:
+    bill = map_bill(
+        {
+            "_id": "bill-1",
+            "status": "pending",
+            "payee": "Verizon",
+            "nickname": "Phone plan",
+            "payment_amount": 45.0,
+            "upcoming_payment_date": "2026-11-20",
+            "recurring_date": 20,
+            "account_id": "acc-1",
+        },
+        app_customer_id="demo-customer-001",
+        as_of=date(2026, 11, 14),
+    )
+    assert bill is not None
+    assert bill.bill_id == "bill:bill-1"
+    assert bill.amount == Decimal("45.00")
+    assert bill.next_due_date == date(2026, 11, 20)
+    assert bill.category == "Utilities"
+    assert bill.customer_id == "demo-customer-001"
+
+
+def test_map_bill_v2_payment_amount_cents_and_recurring() -> None:
+    bill = map_bill(
+        {
+            "id": "bill_01",
+            "status": "recurring",
+            "payee": "Landlord",
+            "nickname": "Rent",
+            "payment_amount_cents": 98000,
+            "recurring_date": 5,
+            "account_id": "acct_01",
+        },
+        app_customer_id="demo-customer-001",
+        as_of=date(2026, 11, 14),
+    )
+    assert bill is not None
+    assert bill.amount == Decimal("980.00")
+    assert bill.next_due_date == date(2026, 12, 5)
+    assert bill.category == "Housing"
+
+
+def test_map_bill_skips_cancelled_and_zero() -> None:
+    assert (
+        map_bill(
+            {
+                "_id": "b1",
+                "status": "cancelled",
+                "payment_amount": 10,
+                "upcoming_payment_date": "2026-11-20",
+                "account_id": "a1",
+            },
+            app_customer_id="demo-customer-001",
+            as_of=date(2026, 11, 14),
+        )
+        is None
+    )
+    assert (
+        map_bill(
+            {
+                "_id": "b2",
+                "status": "pending",
+                "payment_amount": 0,
+                "upcoming_payment_date": "2026-11-20",
+                "account_id": "a1",
+            },
+            app_customer_id="demo-customer-001",
+            as_of=date(2026, 11, 14),
+        )
+        is None
+    )
+
+
+def test_collect_scheduled_bills_filters() -> None:
+    bills = collect_scheduled_bills(
+        [
+            {
+                "_id": "ok",
+                "status": "pending",
+                "nickname": "Internet",
+                "payment_amount": 70,
+                "upcoming_payment_date": "2026-11-25",
+                "account_id": "a1",
+            },
+            {
+                "_id": "skip",
+                "status": "completed",
+                "payment_amount": 10,
+                "upcoming_payment_date": "2026-11-18",
+                "account_id": "a1",
+            },
+        ],
+        app_customer_id="demo-customer-001",
+        as_of=date(2026, 11, 14),
+    )
+    assert len(bills) == 1
+    assert bills[0].name == "Internet"

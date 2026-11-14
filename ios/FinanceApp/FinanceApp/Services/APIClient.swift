@@ -29,6 +29,15 @@ actor APIClient {
         self.baseURL = baseURL
     }
 
+    struct HealthResponse: Decodable, Sendable {
+        let status: String
+        let mode: String
+    }
+
+    func fetchHealth() async throws -> HealthResponse {
+        try await get("/health")
+    }
+
     func fetchDashboard(customerId: String = demoCustomerId) async throws -> DashboardResponse {
         try await get("/customers/\(customerId)/dashboard")
     }

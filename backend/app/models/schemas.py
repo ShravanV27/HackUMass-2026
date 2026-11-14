@@ -112,14 +112,23 @@ class CategorySpend(BaseModel):
     txn_count: int
 
 
+class DailySpendPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    day: date
+    total_spent: Decimal
+    txn_count: int
+
+
 class SpendingWindowSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     customer_id: str
     start_at: datetime
     end_at: datetime
-    source: Literal["sql", "memory"]
+    source: Literal["sql", "memory", "continuous_aggregate"]
     categories: list[CategorySpend]
+    daily: list[DailySpendPoint] = Field(default_factory=list)
     income_posted: Decimal
     expenses_posted: Decimal
     pending_income: Decimal

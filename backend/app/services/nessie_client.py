@@ -12,6 +12,7 @@ Nessie v2 (`v2-prod-api`) notes:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -23,6 +24,14 @@ class NessieClientError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class AccountCollection:
+    """Account list plus whether the response looks complete (safe to reconcile)."""
+
+    items: list[dict[str, Any]]
+    complete: bool
 
 
 class NessieClient:
@@ -82,12 +91,24 @@ class NessieClient:
             raise NessieClientError("Nessie returned invalid JSON") from exc
 
     def list_accounts_for_customer(self, nessie_customer_id: str) -> list[dict[str, Any]]:
-        payload = self._get(f"/customers/{nessie_customer_id}/accounts")
-        return _as_list(payload)
+        return self.fetch_accounts_for_customer(nessie_customer_id).items
 
     def list_all_accounts(self) -> list[dict[str, Any]]:
+        return self.fetch_all_accounts().items
+
+    def fetch_accounts_for_customer(self, nessie_customer_id: str) -> AccountCollection:
+        payload = self._get(f"/customers/{nessie_customer_id}/accounts")
+        items = _as_list(payload)
+        return AccountCollection(
+            items=items, complete=_is_complete_collection(payload, items)
+        )
+
+    def fetch_all_accounts(self) -> AccountCollection:
         payload = self._get("/accounts")
-        return _as_list(payload)
+        items = _as_list(payload)
+        return AccountCollection(
+            items=items, complete=_is_complete_collection(payload, items)
+        )
 
     def list_account_transactions(self, account_id: str) -> list[dict[str, Any]]:
         """Primary v2 history feed (GET allowed)."""
@@ -126,6 +147,23 @@ class NessieClient:
             )
         )
 
+    def list_bills_for_customer(self, nessie_customer_id: str) -> list[dict[str, Any]]:
+        """GET /customers/{id}/bills — scheduled/recurring obligations."""
+        return _as_list(
+            self._get(
+                f"/customers/{nessie_customer_id}/bills",
+                tolerate_statuses=frozenset({404}),
+            )
+        )
+
+    def list_bills_for_account(self, account_id: str) -> list[dict[str, Any]]:
+        return _as_list(
+            self._get(
+                f"/accounts/{account_id}/bills",
+                tolerate_statuses=frozenset({404, 405}),
+            )
+        )
+
 
 # Nessie v2 commonly wraps collections as {"items": [...]}. Older/classic
 # shapes may use results/data or resource-named keys.
@@ -139,6 +177,7 @@ _COLLECTION_KEYS = (
     "deposits",
     "withdrawals",
     "transfers",
+    "bills",
 )
 
 
@@ -158,3 +197,34 @@ def _as_list(payload: Any) -> list[dict[str, Any]]:
             return [payload]
         return []
     return []
+
+
+def _is_complete_collection(payload: Any, items: list[dict[str, Any]]) -> bool:
+    """Return False when pagination / truncation metadata suggests a partial page.
+
+    Incomplete collections must not trigger TigerData orphan deletion.
+    """
+    if payload is None:
+        return True
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return True
+
+    if payload.get("next") or payload.get("next_page") or payload.get("next_url"):
+        return False
+    if payload.get("has_more") is True or payload.get("hasMore") is True:
+        return False
+
+    for key in ("total", "count", "total_count", "totalCount"):
+        raw_total = payload.get(key)
+        if raw_total is None:
+            continue
+        try:
+            total = int(raw_total)
+        except (TypeError, ValueError):
+            continue
+        if total > len(items):
+            return False
+
+    return True

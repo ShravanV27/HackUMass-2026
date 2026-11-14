@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -90,12 +91,82 @@ WHERE customer_id = %(customer_id)s
   AND posted_at < %(end_at)s
 """
 
+_DAILY_SPENDING_SQL = """
+SELECT
+    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    COUNT(*) AS txn_count
+FROM transactions
+WHERE customer_id = %(customer_id)s
+  AND kind = 'expense'
+  AND status = 'posted'
+  AND posted_at >= %(start_at)s
+  AND posted_at < %(end_at)s
+GROUP BY 1
+ORDER BY 1
+"""
+
+_DAILY_SPENDING_CAGG_SQL = """
+SELECT
+    day::date AS day,
+    COALESCE(SUM(total_spent), 0) AS total_spent,
+    COALESCE(SUM(txn_count), 0)::bigint AS txn_count
+FROM daily_spending
+WHERE customer_id = %(customer_id)s
+  AND day >= %(start_at)s
+  AND day < %(end_at)s
+GROUP BY 1
+ORDER BY 1
+"""
+
+_CREATE_DAILY_SPENDING_CAGG = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_spending
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 day', posted_at) AS day,
+    customer_id,
+    SUM(ABS(amount)) AS total_spent,
+    COUNT(*)::bigint AS txn_count
+FROM transactions
+WHERE kind = 'expense'
+  AND status = 'posted'
+GROUP BY 1, 2
+WITH NO DATA
+"""
+
+_HYPERTABLE_CHECK = """
+SELECT 1
+FROM timescaledb_information.hypertables
+WHERE hypertable_name = 'transactions'
+LIMIT 1
+"""
+
+
+class TigerSchemaError(RuntimeError):
+    """Raised when required TigerData/Timescale features are unavailable."""
+
+
+@dataclass(frozen=True)
+class SchemaEnsureResult:
+    hypertable_enabled: bool
+    continuous_aggregate_enabled: bool
+
+
+@dataclass(frozen=True)
+class CustomerSyncWriteResult:
+    accounts_upserted: int
+    transactions_upserted: int
+    accounts_deleted: int
+    transactions_deleted: int
+    reconciled: bool
+
 
 class TigerRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
+        self.last_schema_result: SchemaEnsureResult | None = None
 
-    def ensure_schema(self) -> None:
+    def ensure_schema(self, *, require_hypertable: bool = False) -> SchemaEnsureResult:
         sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         statements = _split_sql(sql)
         table_stmts = [s for s in statements if "create_hypertable" not in s.lower()]
@@ -104,31 +175,42 @@ class TigerRepository:
             for statement in table_stmts:
                 cur.execute(statement)
         self._conn.commit()
-        # Timescale hypertable is best-effort when the extension is available.
+
+        hypertable_enabled = False
+        hypertable_error: str | None = None
         for statement in hyper_stmts:
             try:
                 with self._conn.cursor() as cur:
                     cur.execute(statement)
                 self._conn.commit()
-            except psycopg.Error:
+            except psycopg.Error as exc:
                 self._conn.rollback()
+                hypertable_error = str(exc)
+        hypertable_enabled = self._transactions_is_hypertable()
+        if require_hypertable and not hypertable_enabled:
+            detail = hypertable_error or "create_hypertable did not register transactions"
+            raise TigerSchemaError(
+                "TigerData hypertable for transactions is required in live mode "
+                f"but is not enabled ({detail}). "
+                "Confirm TimescaleDB/TigerData is available on DATABASE_URL."
+            )
+
+        cagg_enabled = False
+        if hypertable_enabled:
+            cagg_enabled = self._ensure_daily_spending_cagg()
+
+        result = SchemaEnsureResult(
+            hypertable_enabled=hypertable_enabled,
+            continuous_aggregate_enabled=cagg_enabled,
+        )
+        self.last_schema_result = result
+        return result
 
     def upsert_accounts(self, accounts: list[Account]) -> int:
         if not accounts:
             return 0
         with self._conn.cursor() as cur:
-            for account in accounts:
-                cur.execute(
-                    _UPSERT_ACCOUNT,
-                    {
-                        "account_id": account.account_id,
-                        "customer_id": account.customer_id,
-                        "name": account.name,
-                        "account_type": account.account_type,
-                        "balance": account.balance,
-                        "currency": account.currency,
-                    },
-                )
+            self._upsert_accounts_cursor(cur, accounts)
         self._conn.commit()
         return len(accounts)
 
@@ -136,24 +218,119 @@ class TigerRepository:
         if not transactions:
             return 0
         with self._conn.cursor() as cur:
-            for txn in transactions:
-                cur.execute(
-                    _UPSERT_TRANSACTION,
-                    {
-                        "transaction_id": txn.transaction_id,
-                        "customer_id": txn.customer_id,
-                        "account_id": txn.account_id,
-                        "amount": txn.amount,
-                        "kind": txn.kind.value,
-                        "status": txn.status.value,
-                        "description": txn.description,
-                        "category": txn.category,
-                        "posted_at": txn.posted_at,
-                        "counterparty_account_id": txn.counterparty_account_id,
-                    },
-                )
+            self._upsert_transactions_cursor(cur, transactions)
         self._conn.commit()
         return len(transactions)
+
+    def commit_customer_sync(
+        self,
+        *,
+        customer_id: str,
+        accounts: list[Account],
+        transactions: list[Transaction],
+        reconcile: bool,
+    ) -> CustomerSyncWriteResult:
+        """Atomically upsert the Nessie snapshot and optionally prune orphans.
+
+        Orphan deletes are scoped to ``customer_id`` only and run only when
+        ``reconcile`` is True (caller must certify the Nessie fetch was complete).
+        """
+        keep_ids = {account.account_id for account in accounts}
+        with self._conn.transaction():
+            with self._conn.cursor() as cur:
+                self._upsert_accounts_cursor(cur, accounts)
+                self._upsert_transactions_cursor(cur, transactions)
+                accounts_deleted = 0
+                transactions_deleted = 0
+                if reconcile:
+                    transactions_deleted, accounts_deleted = (
+                        self._delete_stale_for_customer_cursor(
+                            cur, customer_id=customer_id, keep_account_ids=keep_ids
+                        )
+                    )
+        return CustomerSyncWriteResult(
+            accounts_upserted=len(accounts),
+            transactions_upserted=len(transactions),
+            accounts_deleted=accounts_deleted,
+            transactions_deleted=transactions_deleted,
+            reconciled=reconcile,
+        )
+
+    def _upsert_accounts_cursor(self, cur: Any, accounts: list[Account]) -> None:
+        for account in accounts:
+            cur.execute(
+                _UPSERT_ACCOUNT,
+                {
+                    "account_id": account.account_id,
+                    "customer_id": account.customer_id,
+                    "name": account.name,
+                    "account_type": account.account_type,
+                    "balance": account.balance,
+                    "currency": account.currency,
+                },
+            )
+
+    def _upsert_transactions_cursor(
+        self, cur: Any, transactions: list[Transaction]
+    ) -> None:
+        for txn in transactions:
+            cur.execute(
+                _UPSERT_TRANSACTION,
+                {
+                    "transaction_id": txn.transaction_id,
+                    "customer_id": txn.customer_id,
+                    "account_id": txn.account_id,
+                    "amount": txn.amount,
+                    "kind": txn.kind.value,
+                    "status": txn.status.value,
+                    "description": txn.description,
+                    "category": txn.category,
+                    "posted_at": txn.posted_at,
+                    "counterparty_account_id": txn.counterparty_account_id,
+                },
+            )
+
+    def _delete_stale_for_customer_cursor(
+        self,
+        cur: Any,
+        *,
+        customer_id: str,
+        keep_account_ids: set[str],
+    ) -> tuple[int, int]:
+        """Delete stale transactions then accounts for one customer only."""
+        keep = list(keep_account_ids)
+        if keep:
+            cur.execute(
+                """
+                DELETE FROM transactions
+                WHERE customer_id = %s
+                  AND account_id <> ALL(%s)
+                """,
+                (customer_id, keep),
+            )
+            transactions_deleted = cur.rowcount or 0
+            cur.execute(
+                """
+                DELETE FROM accounts
+                WHERE customer_id = %s
+                  AND account_id <> ALL(%s)
+                """,
+                (customer_id, keep),
+            )
+            accounts_deleted = cur.rowcount or 0
+        else:
+            # Complete empty snapshot: remove this customer's rows only.
+            cur.execute(
+                "DELETE FROM transactions WHERE customer_id = %s",
+                (customer_id,),
+            )
+            transactions_deleted = cur.rowcount or 0
+            cur.execute(
+                "DELETE FROM accounts WHERE customer_id = %s",
+                (customer_id,),
+            )
+            accounts_deleted = cur.rowcount or 0
+        return transactions_deleted, accounts_deleted
 
     def list_accounts(self, customer_id: str) -> list[Account]:
         with self._conn.cursor(row_factory=dict_row) as cur:
@@ -268,6 +445,109 @@ class TigerRepository:
                 (income + pending_income) - (expenses + pending_expenses)
             ).quantize(Decimal("0.01")),
         }
+
+    def daily_spending(
+        self,
+        customer_id: str,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+        prefer_continuous_aggregate: bool = True,
+    ) -> list[dict[str, Any]]:
+        """SQL time-window daily spending (cagg when available, else date_trunc)."""
+        params = {
+            "customer_id": customer_id,
+            "start_at": start_at,
+            "end_at": end_at,
+        }
+        if prefer_continuous_aggregate and self._daily_spending_cagg_exists():
+            try:
+                self._refresh_daily_spending(start_at=start_at, end_at=end_at)
+                with self._conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(_DAILY_SPENDING_CAGG_SQL, params)
+                    rows = cur.fetchall()
+                return [
+                    {
+                        "day": row["day"],
+                        "total_spent": Decimal(str(row["total_spent"])),
+                        "txn_count": int(row["txn_count"]),
+                        "source": "continuous_aggregate",
+                    }
+                    for row in rows
+                ]
+            except psycopg.Error:
+                self._conn.rollback()
+
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_DAILY_SPENDING_SQL, params)
+            rows = cur.fetchall()
+        return [
+            {
+                "day": row["day"],
+                "total_spent": Decimal(str(row["total_spent"])),
+                "txn_count": int(row["txn_count"]),
+                "source": "sql",
+            }
+            for row in rows
+        ]
+
+    def _transactions_is_hypertable(self) -> bool:
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_HYPERTABLE_CHECK)
+                found = cur.fetchone() is not None
+            return found
+        except psycopg.Error:
+            self._conn.rollback()
+            return False
+
+    def _daily_spending_cagg_exists(self) -> bool:
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM timescaledb_information.continuous_aggregates
+                    WHERE view_name = 'daily_spending'
+                    LIMIT 1
+                    """
+                )
+                found = cur.fetchone() is not None
+            return found
+        except psycopg.Error:
+            self._conn.rollback()
+            return False
+
+    def _ensure_daily_spending_cagg(self) -> bool:
+        if self._daily_spending_cagg_exists():
+            return True
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_CREATE_DAILY_SPENDING_CAGG)
+            self._conn.commit()
+            return self._daily_spending_cagg_exists()
+        except psycopg.Error:
+            self._conn.rollback()
+            return False
+
+    def _refresh_daily_spending(
+        self,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                CALL refresh_continuous_aggregate(
+                    'daily_spending',
+                    %(start_at)s,
+                    %(end_at)s
+                )
+                """,
+                {"start_at": start_at, "end_at": end_at},
+            )
+        self._conn.commit()
 
 
 def _split_sql(sql: str) -> list[str]:

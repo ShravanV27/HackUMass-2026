@@ -33,9 +33,27 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def _is_credit_card(account_type: str) -> bool:
+    return "credit" in account_type.strip().lower()
+
+
 def total_available_balance(accounts: list[Account]) -> Decimal:
-    """Sum of ledger balances across the customer's accounts."""
-    return _money(sum((a.balance for a in accounts), ZERO))
+    """Spendable cash across asset accounts.
+
+    Credit-card balances are liabilities (and may be stored negative after Nessie
+    mapping). They must never count as available cash for runway / safe-to-spend.
+    """
+    return _money(
+        sum(
+            (a.balance for a in accounts if not _is_credit_card(a.account_type)),
+            ZERO,
+        )
+    )
+
+
+def spendable_cash_balance(accounts: list[Account]) -> Decimal:
+    """Alias for total_available_balance — cash only, no credit lines."""
+    return total_available_balance(accounts)
 
 
 def summarize_money_flow(

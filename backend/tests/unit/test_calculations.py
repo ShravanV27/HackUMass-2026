@@ -64,6 +64,26 @@ def test_total_available_balance_sums_accounts() -> None:
     assert total_available_balance(accounts) == Decimal("150.30")
 
 
+def test_total_available_balance_excludes_credit_cards() -> None:
+    accounts = [
+        Account(
+            account_id="a1",
+            customer_id="c1",
+            name="Checking",
+            account_type="Checking",
+            balance=Decimal("100.00"),
+        ),
+        Account(
+            account_id="cc",
+            customer_id="c1",
+            name="Card",
+            account_type="Credit Card",
+            balance=Decimal("-40.00"),
+        ),
+    ]
+    assert total_available_balance(accounts) == Decimal("100.00")
+
+
 def test_income_and_expenses_posted_only() -> None:
     txns = [
         _txn(
@@ -202,9 +222,10 @@ def test_mock_fixture_money_flow_expectations() -> None:
         customer_id, provider.list_transactions(customer_id)
     )
     assert summary.income_posted == Decimal("3200.00")
-    assert summary.expenses_posted == Decimal("1189.82")
+    # Food 145.32 + Rent 980 + Transit 64.50 + Shopping 500 = 1689.82
+    assert summary.expenses_posted == Decimal("1689.82")
     assert summary.pending_expenses == Decimal("52.10")
     assert summary.pending_income == Decimal("200.00")
-    assert summary.net_posted == Decimal("2010.18")
-    assert summary.net_including_pending == Decimal("2158.08")
+    assert summary.net_posted == Decimal("1510.18")
+    assert summary.net_including_pending == Decimal("1658.08")
     assert summary.transfer_volume == Decimal("300.00")

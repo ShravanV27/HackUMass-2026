@@ -1,4 +1,4 @@
-"""M5 predictive endpoints (mock-first). Existing /forecast stays unchanged."""
+"""M5 predictive endpoints (mock + live). Existing /forecast stays unchanged."""
 
 from __future__ import annotations
 

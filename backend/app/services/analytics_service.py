@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.config import Settings
 from app.db.connection import get_connection
 from app.db.repository import TigerRepository
-from app.models.schemas import CategorySpend, SpendingWindowSummary, TransactionKind
+from app.models.schemas import (
+    CategorySpend,
+    DailySpendPoint,
+    SpendingWindowSummary,
+    TransactionKind,
+)
 from app.services.providers.base import DataProvider
 
 
@@ -27,7 +32,7 @@ def spending_window_summary(
         end_at = end_at.replace(tzinfo=timezone.utc)
 
     if not settings.use_mock_data and settings.database_url:
-        # Warm live sync (no-op for mock; LiveDataProvider syncs once per request).
+        # Warm live sync once; LiveDataProvider skips duplicate Nessie pulls.
         provider.list_transactions(customer_id)
         with get_connection(settings) as conn:
             repo = TigerRepository(conn)
@@ -41,15 +46,32 @@ def spending_window_summary(
                     customer_id, start_at=start_at, end_at=end_at
                 )
             ]
+            daily_rows = repo.daily_spending(
+                customer_id, start_at=start_at, end_at=end_at
+            )
+            daily = [
+                DailySpendPoint(
+                    day=row["day"],
+                    total_spent=row["total_spent"],
+                    txn_count=row["txn_count"],
+                )
+                for row in daily_rows
+            ]
             cashflow = repo.cashflow_in_window(
                 customer_id, start_at=start_at, end_at=end_at
             )
+        source = (
+            "continuous_aggregate"
+            if daily_rows and daily_rows[0].get("source") == "continuous_aggregate"
+            else "sql"
+        )
         return SpendingWindowSummary(
             customer_id=customer_id,
             start_at=start_at,
             end_at=end_at,
-            source="sql",
+            source=source,  # type: ignore[arg-type]
             categories=categories,
+            daily=daily,
             **cashflow,
         )
 
@@ -78,6 +100,9 @@ def _memory_spending_window(
     transfer_abs = Decimal("0")
     transfer_legs = 0
 
+    daily_totals: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    daily_counts: dict[date, int] = defaultdict(int)
+
     for txn in txns:
         posted = txn.posted_at
         if posted.tzinfo is None:
@@ -103,6 +128,9 @@ def _memory_spending_window(
                 expenses_posted += spent
                 category_totals[txn.category] += spent
                 category_counts[txn.category] += 1
+                day = posted.date()
+                daily_totals[day] += spent
+                daily_counts[day] += 1
             else:
                 pending_expenses += spent
 
@@ -121,12 +149,21 @@ def _memory_spending_window(
             category_totals.items(), key=lambda item: item[1], reverse=True
         )
     ]
+    daily = [
+        DailySpendPoint(
+            day=day,
+            total_spent=total.quantize(Decimal("0.01")),
+            txn_count=daily_counts[day],
+        )
+        for day, total in sorted(daily_totals.items())
+    ]
     return SpendingWindowSummary(
         customer_id=customer_id,
         start_at=start_at,
         end_at=end_at,
         source="memory",
         categories=categories,
+        daily=daily,
         income_posted=income_posted.quantize(Decimal("0.01")),
         expenses_posted=expenses_posted.quantize(Decimal("0.01")),
         pending_income=pending_income.quantize(Decimal("0.01")),

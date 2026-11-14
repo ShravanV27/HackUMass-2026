@@ -28,8 +28,18 @@ Demo customer id: `demo-customer-001` (server-resolved; path must match).
 source .venv/bin/activate
 pip install -r backend/requirements-dev.txt
 cd backend
+
+# A) Offline suite (default — no external credentials)
 pytest
+
+# B) Safe live integration (opt-in; see docs/live_testing.md)
+# pytest --run-live -m "live and not destructive and not live_gemini"
+
+# C) Destructive Nessie seed (explicit approval only)
+# pytest --run-destructive -m destructive
 ```
+
+Live/destructive tests are deselected unless `--run-live` / `--run-destructive` are passed. Details: [`docs/live_testing.md`](docs/live_testing.md).
 
 ## iOS Simulator
 
