@@ -14,12 +14,14 @@ The server resolves the current customer from server-side context (fixed `DEMO_C
 
 `USE_MOCK_DATA=true` (default) uses fixtures. Live mode (`USE_MOCK_DATA=false`):
 
-1. **Nessie** (GET only) — accounts + `/accounts/{id}/transactions` (v2) + `/customers/{id}/bills`
+1. **Nessie** (GET only) — accounts + `/accounts/{id}/transactions` (v2) + bills (per-account / fallback)
 2. **TigerData** — idempotent upsert into `accounts` + `transactions` hypertable (required; no silent table fallback)
 3. **Domain math** — source of truth for dashboard money-flow / M5 forecasts
 4. **Gemini** — narrates precomputed metrics via `GEMINI_MODEL` (does not invent numbers or execute transfers)
 
 Map Nessie sandbox customers with optional `NESSIE_CUSTOMER_ID` → app `DEMO_CUSTOMER_ID`.
+
+Live demo data is created only by `scripts/reset_demo.py` (historical `POST /simulations`, then TigerData sync).
 
 ## SQL analytics
 

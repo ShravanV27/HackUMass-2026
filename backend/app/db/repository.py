@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -19,6 +20,8 @@ from app.models.schemas import (
 )
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+_PROCESS_SCHEMA_LOCK = threading.Lock()
+_PROCESS_SCHEMA_RESULT: SchemaEnsureResult | None = None
 
 _UPSERT_ACCOUNT = """
 INSERT INTO accounts (
@@ -167,6 +170,37 @@ class TigerRepository:
         self.last_schema_result: SchemaEnsureResult | None = None
 
     def ensure_schema(self, *, require_hypertable: bool = False) -> SchemaEnsureResult:
+        global _PROCESS_SCHEMA_RESULT
+
+        cached = _PROCESS_SCHEMA_RESULT
+        if cached is not None:
+            if require_hypertable and not cached.hypertable_enabled:
+                raise TigerSchemaError(
+                    "TigerData hypertable for transactions is required in live mode "
+                    "but is not enabled."
+                )
+            self.last_schema_result = cached
+            return cached
+
+        with _PROCESS_SCHEMA_LOCK:
+            cached = _PROCESS_SCHEMA_RESULT
+            if cached is not None:
+                if require_hypertable and not cached.hypertable_enabled:
+                    raise TigerSchemaError(
+                        "TigerData hypertable for transactions is required in live mode "
+                        "but is not enabled."
+                    )
+                self.last_schema_result = cached
+                return cached
+
+            result = self._ensure_schema_uncached(require_hypertable=require_hypertable)
+            _PROCESS_SCHEMA_RESULT = result
+            self.last_schema_result = result
+            return result
+
+    def _ensure_schema_uncached(
+        self, *, require_hypertable: bool
+    ) -> SchemaEnsureResult:
         sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         statements = _split_sql(sql)
         table_stmts = [s for s in statements if "create_hypertable" not in s.lower()]
@@ -199,12 +233,26 @@ class TigerRepository:
         if hypertable_enabled:
             cagg_enabled = self._ensure_daily_spending_cagg()
 
-        result = SchemaEnsureResult(
+        return SchemaEnsureResult(
             hypertable_enabled=hypertable_enabled,
             continuous_aggregate_enabled=cagg_enabled,
         )
-        self.last_schema_result = result
-        return result
+
+    def reset_app_tables(self) -> None:
+        """Drop and recreate HackUMass app tables only (accounts/transactions/cagg).
+
+        Does not touch unrelated schemas or databases. Safe for disposable
+        hackathon demo databases pointed at by DATABASE_URL.
+        """
+        global _PROCESS_SCHEMA_RESULT
+        with self._conn.cursor() as cur:
+            cur.execute("DROP MATERIALIZED VIEW IF EXISTS daily_spending CASCADE")
+            cur.execute("DROP TABLE IF EXISTS transactions CASCADE")
+            cur.execute("DROP TABLE IF EXISTS accounts CASCADE")
+        self._conn.commit()
+        with _PROCESS_SCHEMA_LOCK:
+            _PROCESS_SCHEMA_RESULT = None
+        self.ensure_schema(require_hypertable=True)
 
     def upsert_accounts(self, accounts: list[Account]) -> int:
         if not accounts:
@@ -257,9 +305,11 @@ class TigerRepository:
         )
 
     def _upsert_accounts_cursor(self, cur: Any, accounts: list[Account]) -> None:
-        for account in accounts:
-            cur.execute(
-                _UPSERT_ACCOUNT,
+        if not accounts:
+            return
+        cur.executemany(
+            _UPSERT_ACCOUNT,
+            [
                 {
                     "account_id": account.account_id,
                     "customer_id": account.customer_id,
@@ -267,15 +317,21 @@ class TigerRepository:
                     "account_type": account.account_type,
                     "balance": account.balance,
                     "currency": account.currency,
-                },
-            )
+                }
+                for account in accounts
+            ],
+        )
 
     def _upsert_transactions_cursor(
         self, cur: Any, transactions: list[Transaction]
     ) -> None:
-        for txn in transactions:
-            cur.execute(
-                _UPSERT_TRANSACTION,
+        if not transactions:
+            return
+        # Batch upsert — row-by-row over WAN TigerData was ~12s for ~500 txns
+        # and caused iOS 15s timeouts under concurrent prediction requests.
+        cur.executemany(
+            _UPSERT_TRANSACTION,
+            [
                 {
                     "transaction_id": txn.transaction_id,
                     "customer_id": txn.customer_id,
@@ -287,8 +343,10 @@ class TigerRepository:
                     "category": txn.category,
                     "posted_at": txn.posted_at,
                     "counterparty_account_id": txn.counterparty_account_id,
-                },
-            )
+                }
+                for txn in transactions
+            ],
+        )
 
     def _delete_stale_for_customer_cursor(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 from typing import Literal
 
@@ -36,7 +37,9 @@ class LiveDataProvider(DataProvider):
         self._gemini = gemini
         self._sync_on_read = sync_on_read
         self._synced_customers: set[str] = set()
+        self._sync_lock = threading.Lock()
         self._bills_cache: dict[str, list[ScheduledBill]] = {}
+        self._bills_lock = threading.Lock()
 
     @property
     def mode(self) -> Literal["mock", "live"]:
@@ -66,8 +69,9 @@ class LiveDataProvider(DataProvider):
         Returns [] when Nessie has no bills or the bills endpoint is unavailable.
         Never invents obligations.
         """
-        if customer_id in self._bills_cache:
-            return list(self._bills_cache[customer_id])
+        with self._bills_lock:
+            if customer_id in self._bills_cache:
+                return list(self._bills_cache[customer_id])
 
         # Ensure accounts/transactions are warm so forecasts see live balances.
         if self._sync_on_read:
@@ -80,14 +84,16 @@ class LiveDataProvider(DataProvider):
                 self._settings, customer_id
             )
         except PermissionError:
-            self._bills_cache[customer_id] = []
+            with self._bills_lock:
+                self._bills_cache[customer_id] = []
             return []
 
         nessie = self._nessie or NessieClient(self._settings)
         try:
             raw = nessie.list_bills_for_customer(nessie_customer_id)
         except NessieClientError:
-            self._bills_cache[customer_id] = []
+            with self._bills_lock:
+                self._bills_cache[customer_id] = []
             return []
 
         bills = collect_scheduled_bills(
@@ -95,8 +101,9 @@ class LiveDataProvider(DataProvider):
             app_customer_id=customer_id,
             as_of=date.today(),
         )
-        self._bills_cache[customer_id] = bills
-        return list(bills)
+        with self._bills_lock:
+            self._bills_cache[customer_id] = bills
+            return list(bills)
 
     def explain_dashboard(self, customer_id: str, summary_text: str) -> str:
         """Narrate precomputed metrics via Gemini when configured.
@@ -115,11 +122,19 @@ class LiveDataProvider(DataProvider):
             )
 
     def _sync(self, customer_id: str, repo: TigerRepository) -> None:
+        # Single-flight: PredictionsView fires cashflow/safe/drift in parallel;
+        # without a lock each request ran a full Nessie→TigerData sync (~12s+)
+        # and iOS timed out at 15s.
         if customer_id in self._synced_customers:
             return
-        nessie = self._nessie or NessieClient(self._settings)
-        NessieSyncService(self._settings, nessie, repo).sync_customer(customer_id)
-        self._synced_customers.add(customer_id)
+        with self._sync_lock:
+            if customer_id in self._synced_customers:
+                return
+            nessie = self._nessie or NessieClient(self._settings)
+            NessieSyncService(self._settings, nessie, repo).sync_customer(
+                customer_id
+            )
+            self._synced_customers.add(customer_id)
 
 
 def _deterministic_insight(

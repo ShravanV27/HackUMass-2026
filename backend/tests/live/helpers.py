@@ -3,8 +3,9 @@
 Safety:
 - Never log API keys, account numbers, or full banking payloads.
 - Bound retries for HTTP 429 only.
-- TigerData isolation via LIVE_TEST_DATABASE_URL (must differ from DATABASE_URL
-  unless LIVE_TEST_ALLOW_SHARED_DB=confirm — still refused for destructive).
+- TigerData isolation via LIVE_TEST_DATABASE_URL (must differ from DATABASE_URL).
+- Live tests are read-mostly: never call DELETE /data, POST /simulations, or
+  reset_demo. Cleanup deletes only rows owned by the live-test customer id.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from app.services.nessie_client import NessieClientError
 T = TypeVar("T")
 
 LIVE_TEST_CUSTOMER_ID = "live-test-customer-001"
-CONFIRM_DESTRUCTIVE = "I_UNDERSTAND"
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 
@@ -100,7 +100,6 @@ def with_rate_limit_retries(fn: Callable[[], T], *, label: str = "request") -> T
 
 def _normalize_db_url(url: str) -> str:
     parsed = urlparse(url)
-    # Compare without credentials so user:pass differences do not mask sameness.
     host = parsed.hostname or ""
     port = f":{parsed.port}" if parsed.port else ""
     path = parsed.path or ""
@@ -108,21 +107,21 @@ def _normalize_db_url(url: str) -> str:
 
 
 def require_isolated_database_url() -> str:
-    """Return LIVE_TEST_DATABASE_URL or fail/skip per isolation policy."""
+    """Return LIVE_TEST_DATABASE_URL; must differ from DATABASE_URL."""
     live_url = (os.getenv("LIVE_TEST_DATABASE_URL") or "").strip()
     shared_url = (os.getenv("DATABASE_URL") or "").strip()
     if not live_url:
         pytest.skip(
             "LIVE_TEST_DATABASE_URL is required for TigerData live tests "
-            "(isolates writes from shared development/demo data)"
+            "(isolates writes from the HackUMass demo DATABASE_URL). "
+            "Demo resets belong in: python scripts/reset_demo.py --reset"
         )
     if shared_url and _normalize_db_url(live_url) == _normalize_db_url(shared_url):
-        if os.getenv("LIVE_TEST_ALLOW_SHARED_DB", "").strip() != "confirm":
-            pytest.fail(
-                "Refusing live TigerData tests against shared DATABASE_URL. "
-                "Point LIVE_TEST_DATABASE_URL at an isolated database, or set "
-                "LIVE_TEST_ALLOW_SHARED_DB=confirm to acknowledge the risk."
-            )
+        pytest.fail(
+            "Refusing live TigerData tests against shared DATABASE_URL. "
+            "Point LIVE_TEST_DATABASE_URL at an isolated database. "
+            "Demo data resets belong only in scripts/reset_demo.py --reset."
+        )
     return live_url
 
 
@@ -132,7 +131,10 @@ def require_nessie_read_settings() -> Settings:
         pytest.skip("NESSIE_API_KEY not configured")
     customer = (os.getenv("NESSIE_CUSTOMER_ID") or "").strip()
     if not customer:
-        pytest.skip("NESSIE_CUSTOMER_ID not configured")
+        pytest.skip(
+            "NESSIE_CUSTOMER_ID not configured "
+            "(run: python scripts/reset_demo.py --reset)"
+        )
     return Settings(
         use_mock_data=False,
         demo_customer_id=LIVE_TEST_CUSTOMER_ID,
@@ -163,11 +165,10 @@ def require_live_sync_settings() -> Settings:
 
 
 def require_gemini_settings() -> Settings:
-    if not env_flag("LIVE_TEST_GEMINI"):
-        pytest.skip("Gemini live calls are opt-in; set LIVE_TEST_GEMINI=1")
+    """Gemini live tests run with --run-live when GEMINI_API_KEY is set."""
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
-        pytest.skip("GEMINI_API_KEY not configured")
+        pytest.skip("GEMINI_API_KEY not configured — skipping Gemini live tests")
     return Settings(
         use_mock_data=False,
         demo_customer_id=LIVE_TEST_CUSTOMER_ID,
@@ -175,28 +176,6 @@ def require_gemini_settings() -> Settings:
         gemini_api_key=api_key,
         gemini_model=os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite",
     )
-
-
-def require_destructive_nessie_key() -> str:
-    """Dedicated key for sandbox mutations — never reuse the daily read key silently."""
-    if os.getenv("CONFIRM_NESSIE_DESTRUCTIVE", "").strip() != CONFIRM_DESTRUCTIVE:
-        pytest.fail(
-            "Destructive Nessie tests require CONFIRM_NESSIE_DESTRUCTIVE="
-            f"{CONFIRM_DESTRUCTIVE}"
-        )
-    key = (os.getenv("NESSIE_DESTRUCTIVE_API_KEY") or "").strip()
-    if not key:
-        pytest.fail(
-            "Destructive Nessie tests require NESSIE_DESTRUCTIVE_API_KEY "
-            "(a dedicated test key, not the shared daily key)"
-        )
-    daily = (os.getenv("NESSIE_API_KEY") or "").strip()
-    if daily and key == daily:
-        pytest.fail(
-            "NESSIE_DESTRUCTIVE_API_KEY must differ from NESSIE_API_KEY "
-            "to avoid mutating the shared sandbox with the daily credential"
-        )
-    return key
 
 
 def assert_money_quantized(value: Any) -> None:

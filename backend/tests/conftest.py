@@ -1,4 +1,4 @@
-"""Shared pytest fixtures and live/destructive safety gates."""
+"""Shared pytest fixtures and live-suite safety gates."""
 
 from __future__ import annotations
 
@@ -24,15 +24,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--run-live",
         action="store_true",
         default=False,
-        help="Run tests marked @pytest.mark.live (external credentials required).",
-    )
-    parser.addoption(
-        "--run-destructive",
-        action="store_true",
-        default=False,
         help=(
-            "Run tests marked @pytest.mark.destructive "
-            "(also requires CONFIRM_NESSIE_DESTRUCTIVE=I_UNDERSTAND)."
+            "Run tests marked @pytest.mark.live (external credentials required). "
+            "Includes Gemini live tests when GEMINI_API_KEY is set."
         ),
     )
 
@@ -45,17 +39,12 @@ def _has_marker(item: pytest.Item, name: str) -> bool:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Deselect live/destructive tests during ordinary pytest (not merely skip)."""
+    """Deselect live tests during ordinary pytest (not merely skip)."""
     run_live = bool(config.getoption("--run-live"))
-    run_destructive = bool(config.getoption("--run-destructive"))
     kept: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
-        is_destructive = _has_marker(item, "destructive")
-        is_live = _has_marker(item, "live")
-        if is_destructive and not run_destructive:
-            deselected.append(item)
-        elif is_live and not is_destructive and not run_live:
+        if _has_marker(item, "live") and not run_live:
             deselected.append(item)
         else:
             kept.append(item)

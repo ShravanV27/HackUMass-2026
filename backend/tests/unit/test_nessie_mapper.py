@@ -14,6 +14,7 @@ from app.services.nessie_mapper import (
     map_account,
     map_bill,
     map_deposit,
+    map_feed_transaction,
     map_purchase,
     map_transfer,
     map_withdrawal,
@@ -248,6 +249,62 @@ def test_v2_feed_with_amount_cents() -> None:
     )
     assert txns[0].amount == Decimal("-45.99")
     assert txns[0].kind == TransactionKind.EXPENSE
+
+
+def test_v2_created_at_is_stable_across_repeated_mapping() -> None:
+    """Regression: missing classic date fields must not use datetime.now().
+
+    TigerData PK is (transaction_id, posted_at). Unstable posted_at caused
+    re-sync to insert duplicates (e.g. 200 → 400 rows).
+    """
+    raw = {
+        "id": "txn_01m7stable",
+        "kind": "purchase",
+        "status": "completed",
+        "medium": "balance",
+        "amount_cents": 2500,
+        "description": "Coffee",
+        "created_at": "2026-10-01T12:34:56Z",
+        "settle_at": "2026-10-01T12:34:56Z",
+        "updated_at": "2026-10-01T12:34:56Z",
+    }
+    first = map_feed_transaction(
+        raw, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    second = map_feed_transaction(
+        raw, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    assert first.transaction_id == second.transaction_id == "purchase:txn_01m7stable"
+    assert first.posted_at == second.posted_at
+    assert first.posted_at.isoformat().startswith("2026-10-01T12:34:56")
+
+
+def test_sync_upsert_key_stable_when_mapping_twice() -> None:
+    """Same Nessie row must produce the same TigerData conflict key twice."""
+    feed = [
+        {
+            "id": f"txn_{i}",
+            "kind": "purchase",
+            "status": "completed",
+            "amount_cents": 100 + i,
+            "created_at": f"2026-09-{(i % 28) + 1:02d}T10:00:00Z",
+        }
+        for i in range(5)
+    ]
+    first = collect_from_transaction_feed(
+        app_customer_id="demo-customer-001",
+        account_id="acct_1",
+        feed=feed,
+    )
+    second = collect_from_transaction_feed(
+        app_customer_id="demo-customer-001",
+        account_id="acct_1",
+        feed=feed,
+    )
+    keys_first = {(t.transaction_id, t.posted_at) for t in first}
+    keys_second = {(t.transaction_id, t.posted_at) for t in second}
+    assert keys_first == keys_second
+    assert len(keys_first) == 5
 
 
 def test_map_bill_upcoming_payment_date() -> None:

@@ -56,6 +56,12 @@ def test_collection_complete_detects_pagination() -> None:
         is False
     )
     assert (
+        _is_complete_collection(
+            {"items": items, "next_cursor": "opaque-token"}, items
+        )
+        is False
+    )
+    assert (
         _is_complete_collection({"items": items, "has_more": True}, items)
         is False
     )

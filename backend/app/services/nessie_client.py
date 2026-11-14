@@ -111,8 +111,18 @@ class NessieClient:
         )
 
     def list_account_transactions(self, account_id: str) -> list[dict[str, Any]]:
-        """Primary v2 history feed (GET allowed)."""
-        return _as_list(self._get(f"/accounts/{account_id}/transactions"))
+        """Primary v2 history feed (GET allowed).
+
+        Nessie v2 defaults ``limit`` to 100 and caps at 5000. Request the max so
+        historical simulations are not truncated to the newest page.
+        Account transaction responses are a single page (no cursor in OpenAPI).
+        """
+        return _as_list(
+            self._get(
+                f"/accounts/{account_id}/transactions",
+                params={"limit": 5000},
+            )
+        )
 
     def list_purchases(self, account_id: str) -> list[dict[str, Any]]:
         # v2: POST-only (405). Classic API may still support GET.
@@ -148,13 +158,48 @@ class NessieClient:
         )
 
     def list_bills_for_customer(self, nessie_customer_id: str) -> list[dict[str, Any]]:
-        """GET /customers/{id}/bills — scheduled/recurring obligations."""
-        return _as_list(
+        """Scheduled/recurring obligations for one Nessie customer.
+
+        Tries ``GET /customers/{id}/bills`` when present, then falls back to
+        per-account ``GET /accounts/{id}/bills`` (Nessie v2 OpenAPI shape),
+        and finally key-scoped ``GET /bills`` filtered by the customer's
+        account ids.
+        """
+        direct = _as_list(
             self._get(
                 f"/customers/{nessie_customer_id}/bills",
-                tolerate_statuses=frozenset({404}),
+                tolerate_statuses=frozenset({404, 405}),
             )
         )
+        if direct:
+            return direct
+
+        accounts = self.list_accounts_for_customer(nessie_customer_id)
+        account_ids = {
+            str(row.get("id") or row.get("_id") or "")
+            for row in accounts
+            if row.get("id") or row.get("_id")
+        }
+        collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for account_id in sorted(account_ids):
+            for bill in self.list_bills_for_account(account_id):
+                bill_id = str(bill.get("id") or bill.get("_id") or "")
+                if bill_id and bill_id in seen:
+                    continue
+                if bill_id:
+                    seen.add(bill_id)
+                collected.append(bill)
+        if collected:
+            return collected
+
+        for bill in _as_list(
+            self._get("/bills", tolerate_statuses=frozenset({404, 405}))
+        ):
+            account_id = str(bill.get("account_id") or "")
+            if account_id and account_id in account_ids:
+                collected.append(bill)
+        return collected
 
     def list_bills_for_account(self, account_id: str) -> list[dict[str, Any]]:
         return _as_list(
@@ -211,7 +256,12 @@ def _is_complete_collection(payload: Any, items: list[dict[str, Any]]) -> bool:
     if not isinstance(payload, dict):
         return True
 
-    if payload.get("next") or payload.get("next_page") or payload.get("next_url"):
+    if (
+        payload.get("next")
+        or payload.get("next_cursor")
+        or payload.get("next_page")
+        or payload.get("next_url")
+    ):
         return False
     if payload.get("has_more") is True or payload.get("hasMore") is True:
         return False

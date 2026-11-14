@@ -1,67 +1,109 @@
 # HackUMass-2026
 
-Predictive personal finance prototype (SwiftUI + FastAPI). Mock data is the default so the iOS Simulator demo works without Nessie or Gemini.
+Predictive personal finance prototype (SwiftUI + FastAPI) using Nessie v2, TigerData, and Gemini. Mock data is the default so the iOS Simulator works without live credentials.
 
 ## Layout
 
 - `backend/` — FastAPI app, domain math, mock/live providers
 - `ios/FinanceApp/` — SwiftUI Simulator client
-- Root `test_*.py` — existing live smoke scripts (unchanged)
+- `scripts/reset_demo.py` — one-command live demo setup
 - `.env` — local secrets (gitignored); see `.env.example`
 
-## Backend (mock mode)
+## 1. Install dependencies
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r backend/requirements-dev.txt   # pytest + httpx
+cp .env.example .env   # then fill in keys for live mode
+```
+
+## 2. One-command demo setup (live sandbox)
+
+Preview (no writes):
 
 ```bash
 source .venv/bin/activate
-pip install -r backend/requirements-dev.txt   # pytest + httpx for tests only
+python scripts/reset_demo.py --dry-run
+```
+
+Reset designated Nessie sandbox + HackUMass TigerData (`DATABASE_URL`), simulate ~75 days of history, sync, and verify predictions:
+
+```bash
+python scripts/reset_demo.py --reset
+```
+
+If Nessie succeeds but TigerData sync fails:
+
+```bash
+python scripts/reset_demo.py --resume
+```
+
+`--reset` / `--resume` are sufficient confirmation for the disposable hackathon environments. No extra `CONFIRM_*` variables.
+
+## 3. Start FastAPI
+
+Mock mode (default):
+
+```bash
+source .venv/bin/activate
 cd backend
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Health check: `GET http://127.0.0.1:8000/health`
+Health: `GET http://127.0.0.1:8000/health`  
+Demo customer: `demo-customer-001`
 
-Demo customer id: `demo-customer-001` (server-resolved; path must match).
+## 4. Run the SwiftUI app
 
-## Tests
-
-```bash
-source .venv/bin/activate
-pip install -r backend/requirements-dev.txt
-cd backend
-
-# A) Offline suite (default — no external credentials)
-pytest
-
-# B) Safe live integration (opt-in; see docs/live_testing.md)
-# pytest --run-live -m "live and not destructive and not live_gemini"
-
-# C) Destructive Nessie seed (explicit approval only)
-# pytest --run-destructive -m destructive
-```
-
-Live/destructive tests are deselected unless `--run-live` / `--run-destructive` are passed. Details: [`docs/live_testing.md`](docs/live_testing.md).
-
-## iOS Simulator
-
-1. Start the backend on `127.0.0.1:8000` (mock mode).
+1. Start the backend on `127.0.0.1:8000`.
 2. Open `ios/FinanceApp/FinanceApp.xcodeproj` in Xcode.
 3. Select an iPhone Simulator and Run.
 
 The app calls `GET /customers/demo-customer-001/dashboard` and M5 prediction endpoints under `/predictions/*`.
 
-## Live mode (M4 — optional)
+## 5. Automated tests
 
-Keep `USE_MOCK_DATA=true` for day-to-day Simulator work. To enable live integrations locally:
+```bash
+source .venv/bin/activate
+cd backend
 
-1. Set `USE_MOCK_DATA=false` in `.env` (not committed).
-2. Provide `NESSIE_API_KEY`, `NESSIE_BASE_URL`, optional `NESSIE_CUSTOMER_ID`.
-3. Provide `DATABASE_URL` (TigerData / TimescaleDB).
-4. Provide `GEMINI_API_KEY` and `GEMINI_MODEL` for dashboard narration.
+# Offline suite (default — no external APIs)
+pytest
 
-The API only performs Nessie **GET** reads, upserts into TigerData, and asks Gemini to explain **precomputed** metrics. Root `test_*.py` smoke scripts are unchanged.
+# Live suite (read-only Nessie + isolated TigerData; Gemini when keyed)
+# Requires LIVE_TEST_DATABASE_URL ≠ DATABASE_URL
+pytest --run-live
+```
+
+Details: [`docs/live_testing.md`](docs/live_testing.md).
+
+## 6. Mock vs live mode
+
+| Mode | `.env` | Notes |
+|------|--------|--------|
+| Mock | `USE_MOCK_DATA=true` | Fixture data; no Nessie/TigerData/Gemini required |
+| Live | `USE_MOCK_DATA=false` | Needs `NESSIE_*`, `DATABASE_URL`, optional `GEMINI_*` |
+
+Live mode maps `NESSIE_CUSTOMER_ID` → `DEMO_CUSTOMER_ID`. After a reset, keep `DEMO_CUSTOMER_ID=demo-customer-001` and let `reset_demo.py` update `NESSIE_CUSTOMER_ID`.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `USE_MOCK_DATA` | Provider mode |
+| `DEMO_CUSTOMER_ID` | App customer id (stable) |
+| `NESSIE_CUSTOMER_ID` | Nessie sandbox customer |
+| `NESSIE_API_KEY` / `NESSIE_BASE_URL` | Nessie v2 access |
+| `DATABASE_URL` | HackUMass TigerData database |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Optional narration |
+
+Test-only: `LIVE_TEST_DATABASE_URL` (isolated DB for `pytest --run-live`).
 
 ## Notes
 
-- `USE_MOCK_DATA=true` by default (see `.env.example`).
-- No browser CORS middleware — native SwiftUI does not need it.
-- Do not commit `.env` or API keys. Keys stay server-side only.
+- Do not commit `.env` or API keys.
+- Native SwiftUI does not need browser CORS.
+- Nessie historical simulation may produce irregular (fraud-oriented) activity rather than household spending; predictions still run, but interpret drift carefully. See the summary printed by `reset_demo.py`.
+- Architecture overview: [`docs/architecture.md`](docs/architecture.md)

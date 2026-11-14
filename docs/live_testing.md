@@ -1,6 +1,14 @@
-# Live & destructive integration tests
+# Live integration tests
 
 Opt-in suite under `backend/tests/live/`. Ordinary `pytest` **deselects** these tests so the offline suite stays credential-free.
+
+Demo sandbox resets belong **only** in:
+
+```bash
+python scripts/reset_demo.py --reset
+```
+
+Live tests never call `DELETE /data`, start simulations, or wipe `DATABASE_URL`.
 
 ## Commands
 
@@ -10,55 +18,36 @@ Opt-in suite under `backend/tests/live/`. Ordinary `pytest` **deselects** these 
 source .venv/bin/activate
 cd backend
 pytest
-# equivalent:
-pytest -m "not live and not destructive"
 ```
 
-### B. Safe live integration (read-only Nessie + isolated TigerData)
+### B. Live integration (`--run-live`)
+
+Requires `.env` credentials from a prior demo setup (`NESSIE_*`, and optionally `GEMINI_*`).
+
+TigerData live tests also require an **isolated** database:
+
+```bash
+export LIVE_TEST_DATABASE_URL='postgresql://…'   # must differ from DATABASE_URL
+```
 
 ```bash
 source .venv/bin/activate
 cd backend
-
-export LIVE_TEST_DATABASE_URL='postgresql://…'   # must differ from DATABASE_URL
-# optional if you accept shared-DB risk (not recommended):
-# export LIVE_TEST_ALLOW_SHARED_DB=confirm
-
-# Nessie read credentials (from env / shell — do not commit):
-# NESSIE_API_KEY, NESSIE_BASE_URL, NESSIE_CUSTOMER_ID
-
-pytest --run-live -m "live and not destructive and not live_gemini"
+pytest --run-live
 ```
 
-Gemini (extra opt-in, few calls):
-
-```bash
-LIVE_TEST_GEMINI=1 pytest --run-live -m "live_gemini"
-```
-
-### C. Explicitly approved sandbox reset/reseed (destructive)
-
-```bash
-export NESSIE_DESTRUCTIVE_API_KEY='…'          # dedicated key ≠ NESSIE_API_KEY
-export CONFIRM_NESSIE_DESTRUCTIVE=I_UNDERSTAND
-export CONFIRM_NESSIE_SEED=SEED                # required to actually POST /data/seed
-
-cd backend
-pytest --run-destructive -m destructive
-```
+This runs the full live suite. Gemini tests run automatically when `GEMINI_API_KEY` is set; otherwise they skip with a clear message.
 
 ## Isolation rules
 
 | Resource | Policy |
 |----------|--------|
-| TigerData | Requires `LIVE_TEST_DATABASE_URL`. Fails if it matches `DATABASE_URL` unless `LIVE_TEST_ALLOW_SHARED_DB=confirm`. Rows use customer `live-test-customer-001` and are deleted after tests. |
-| Nessie reads | `NESSIE_API_KEY` GET only; bounded retries on HTTP 429. |
-| Nessie writes | Dedicated `NESSIE_DESTRUCTIVE_API_KEY` + confirmations. Never auto-wipe shared sandbox. |
-| Gemini | `LIVE_TEST_GEMINI=1` + `@pytest.mark.live_gemini`. |
-| Logs | Helpers redact keys and truncate identifiers; no full banking payloads. |
+| TigerData | Requires `LIVE_TEST_DATABASE_URL` ≠ `DATABASE_URL`. Rows use customer `live-test-customer-001` and are deleted after tests. Never truncates demo tables. |
+| Nessie | Read-only GETs against the configured sandbox customer. Bounded retries on HTTP 429. |
+| Gemini | Included with `--run-live` when `GEMINI_API_KEY` is present. |
+| Demo reset | Only `scripts/reset_demo.py --reset` (or `--resume`). |
 
 ## Markers
 
 - `live` — external read/sync/API contracts (`--run-live`)
-- `live_gemini` — Gemini network calls
-- `destructive` — sandbox mutation (`--run-destructive`)
+- `live_gemini` — Gemini network calls (auto-included with `--run-live` when configured)

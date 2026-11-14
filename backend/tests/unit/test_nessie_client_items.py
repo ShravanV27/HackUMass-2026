@@ -230,6 +230,8 @@ def test_list_account_transactions_uses_v2_path(settings: Settings) -> None:
     assert session.get.call_args.args[0].endswith(
         "/accounts/acct_01abc/transactions"
     )
+    # OpenAPI default limit is 100; request max so history is not truncated.
+    assert session.get.call_args.kwargs["params"]["limit"] == 5000
 
 
 def test_list_bills_for_customer_unwraps_items(settings: Settings) -> None:
@@ -254,6 +256,48 @@ def test_list_bills_for_customer_unwraps_items(settings: Settings) -> None:
     rows = client.list_bills_for_customer("nessie-cust-1")
     assert rows[0]["_id"] == "bill-1"
     assert session.get.call_args.args[0].endswith("/customers/nessie-cust-1/bills")
+
+
+def test_list_bills_for_customer_falls_back_to_account_bills(
+    settings: Settings,
+) -> None:
+    session = MagicMock()
+
+    def _get(url: str, **_kwargs):  # noqa: ANN001
+        response = MagicMock()
+        response.status_code = 200
+        if url.endswith("/customers/nessie-cust-1/bills"):
+            response.status_code = 404
+            response.content = b""
+            response.json.return_value = {}
+            return response
+        if url.endswith("/customers/nessie-cust-1/accounts"):
+            response.content = b'{"items":[{"id":"acc-1","type":"Checking"}]}'
+            response.json.return_value = {
+                "items": [{"id": "acc-1", "type": "Checking"}]
+            }
+            return response
+        if url.endswith("/accounts/acc-1/bills"):
+            response.content = b'{"items":[{"id":"bill-9"}]}'
+            response.json.return_value = {
+                "items": [
+                    {
+                        "id": "bill-9",
+                        "status": "recurring",
+                        "payment_amount": 70,
+                        "account_id": "acc-1",
+                    }
+                ]
+            }
+            return response
+        response.content = b'{"items":[]}'
+        response.json.return_value = {"items": []}
+        return response
+
+    session.get.side_effect = _get
+    client = NessieClient(settings, session=session)
+    rows = client.list_bills_for_customer("nessie-cust-1")
+    assert rows[0]["id"] == "bill-9"
 
 
 def test_as_list_unwraps_bills_key() -> None:

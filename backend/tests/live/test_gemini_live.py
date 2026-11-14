@@ -1,4 +1,7 @@
-"""Opt-in Gemini live tests — few calls, metrics-only explanations."""
+"""Gemini live tests — included with ``pytest --run-live`` when keyed.
+
+Skips cleanly when ``GEMINI_API_KEY`` is absent. Few calls; metrics-only prompts.
+"""
 
 from __future__ import annotations
 

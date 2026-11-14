@@ -75,7 +75,8 @@ actor APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 15
+        // Live mode may sync Nessie → TigerData on first request (~few seconds).
+        request.timeoutInterval = 45
         return try await send(request)
     }
 
@@ -88,7 +89,7 @@ actor APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: json)
-        request.timeoutInterval = 15
+        request.timeoutInterval = 45
         return try await send(request)
     }
 

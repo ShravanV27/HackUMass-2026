@@ -64,12 +64,7 @@ def map_purchase(
         status=_status(raw.get("status")),
         description=str(raw.get("description") or "Purchase"),
         category="Purchase",
-        posted_at=_parse_dt(
-            raw.get("purchase_date")
-            or raw.get("transaction_date")
-            or raw.get("date")
-            or raw.get("posted_at")
-        ),
+        posted_at=_transaction_posted_at(raw),
         counterparty_account_id=None,
     )
 
@@ -90,12 +85,7 @@ def map_deposit(
         status=_status(raw.get("status")),
         description=str(raw.get("description") or "Deposit"),
         category="Income",
-        posted_at=_parse_dt(
-            raw.get("transaction_date")
-            or raw.get("purchase_date")
-            or raw.get("date")
-            or raw.get("posted_at")
-        ),
+        posted_at=_transaction_posted_at(raw),
         counterparty_account_id=None,
     )
 
@@ -116,11 +106,7 @@ def map_withdrawal(
         status=_status(raw.get("status")),
         description=str(raw.get("description") or "Withdrawal"),
         category="Withdrawal",
-        posted_at=_parse_dt(
-            raw.get("transaction_date")
-            or raw.get("date")
-            or raw.get("posted_at")
-        ),
+        posted_at=_transaction_posted_at(raw),
         counterparty_account_id=None,
     )
 
@@ -153,11 +139,7 @@ def map_transfer(
         status=_status(raw.get("status")),
         description=str(raw.get("description") or "Transfer"),
         category="Transfer",
-        posted_at=_parse_dt(
-            raw.get("transaction_date")
-            or raw.get("date")
-            or raw.get("posted_at")
-        ),
+        posted_at=_transaction_posted_at(raw),
         counterparty_account_id=counterparty,
     )
 
@@ -433,6 +415,29 @@ def _status(value: Any) -> TransactionStatus:
         # Treat cancelled/recurring as pending so they do not inflate posted totals.
         return TransactionStatus.PENDING
     return TransactionStatus.POSTED
+
+
+def _transaction_posted_at(raw: dict[str, Any]) -> datetime:
+    """Stable event time for TigerData PK ``(transaction_id, posted_at)``.
+
+    Nessie v2 ``TransactionDTO`` exposes ``created_at`` / ``settle_at`` /
+    ``updated_at``. Classic payloads may use purchase/transaction dates.
+    Prefer those over ``datetime.now()`` so re-sync upserts instead of inserting
+    duplicate rows with a new timestamp.
+    """
+    for key in (
+        "purchase_date",
+        "transaction_date",
+        "date",
+        "posted_at",
+        "created_at",
+        "settle_at",
+        "updated_at",
+    ):
+        value = raw.get(key)
+        if value not in (None, ""):
+            return _parse_dt(value)
+    return _parse_dt(None)
 
 
 def _parse_dt(value: Any) -> datetime:
