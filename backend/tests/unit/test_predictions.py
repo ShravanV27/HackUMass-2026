@@ -1,4 +1,4 @@
-"""Unit tests for M5 predictive calculations."""
+"""Unit tests for M5 predictive calculations (engine-backed)."""
 
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ def test_cashflow_separates_scheduled_bills_from_estimated_spend() -> None:
             next_due_date=date(2026, 11, 16),
         )
     ]
-    # $300 discretionary over 30 days => $10/day. Housing excluded via bill category? 
-    # Only Utilities excluded; Food counts.
+    # $300 discretionary on Sunday Nov 1 over 30-day lookback => flat $10/day.
+    # Weekday model: Sunday rate 75; other weekdays 0.
     txns = [_expense(1, "300.00", "Food")]
     forecast = build_cashflow_forecast(
         customer_id="c1",
@@ -72,15 +72,17 @@ def test_cashflow_separates_scheduled_bills_from_estimated_spend() -> None:
     )
     assert forecast.daily_estimated_spend == Decimal("10.00")
     assert forecast.scheduled_bills_total == Decimal("40.00")
-    assert forecast.estimated_spend_total == Decimal("30.00")  # 3 forward days
-    # Day 0: 1000; day1: -10; day2: -40-10; day3: -10
+    # Nov 15 2026 = Sunday. Forward: Sun 75 + Mon 0(+bill) + Tue 0
+    assert forecast.estimated_spend_total == Decimal("75.00")
     assert forecast.points[0].projected_balance == Decimal("1000.00")
-    assert forecast.points[1].estimated_spend == Decimal("10.00")
-    assert forecast.points[1].scheduled_bill_total == Decimal("0.00")
+    assert forecast.points[1].estimated_spend == Decimal("75.00")  # Sun
     assert forecast.points[2].scheduled_bill_total == Decimal("40.00")
     assert forecast.points[2].scheduled_bill_names == ["Phone"]
-    # 1000 - 10 - 50 - 10 = 930
-    assert forecast.ending_balance == Decimal("930.00")
+    assert forecast.points[2].estimated_spend == Decimal("0.00")  # Mon
+    # 1000 - 75 - 40 - 0 = 885
+    assert forecast.ending_balance == Decimal("885.00")
+    assert forecast.spend_model == "weekday"
+    assert forecast.overdraft_risk in {"none", "watch", "likely"}
 
 
 def test_cashflow_does_not_add_future_income() -> None:
@@ -93,6 +95,7 @@ def test_cashflow_does_not_add_future_income() -> None:
         horizon_days=2,
         lookback_days=30,
     )
+    assert forecast.income_assumed is False
     assert all(
         p.projected_balance <= Decimal("500.00") for p in forecast.points
     )
@@ -133,17 +136,18 @@ def test_safe_to_spend_applies_buffer_and_known_pending() -> None:
         lookback_days=30,
         minimum_buffer=Decimal("100.00"),
     )
-    # est = 300/30 = 10/day * 14 = 140; bills 40; pending 50; buffer 100
-    # safe = 1000 - 50 - 40 - 140 - 100 = 670
-    assert result.safe_to_spend == Decimal("670.00")
+    # Weekday est over 14 forward days: Sundays Nov 16 + Nov 23 = 75*2 = 150
+    # safe = 1000 - 50 - 40 - 150 - 100 = 660
+    assert result.safe_to_spend == Decimal("660.00")
     assert result.minimum_buffer == Decimal("100.00")
+    assert result.estimated_spend_total == Decimal("150.00")
 
 
 def test_spending_drift_up() -> None:
     txns = [
-        _expense(10, "20.00"),  # recent window Nov 8-14 if as_of=14, recent_days=7 -> after Nov 7
+        _expense(10, "20.00"),
         _expense(12, "30.00"),
-        _expense(1, "10.00"),  # baseline
+        _expense(1, "10.00"),
     ]
     drift = compute_spending_drift(
         customer_id="c1",

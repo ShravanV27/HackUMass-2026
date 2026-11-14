@@ -186,6 +186,8 @@ struct CashflowDayPoint: Decodable, Identifiable, Sendable {
     let scheduledBillTotal: Decimal
     let estimatedSpend: Decimal
     let scheduledBillNames: [String]
+    let projectedIncome: Decimal
+    let eventLabels: [String]
 
     enum CodingKeys: String, CodingKey {
         case date
@@ -193,6 +195,8 @@ struct CashflowDayPoint: Decodable, Identifiable, Sendable {
         case scheduledBillTotal = "scheduled_bill_total"
         case estimatedSpend = "estimated_spend"
         case scheduledBillNames = "scheduled_bill_names"
+        case projectedIncome = "projected_income"
+        case eventLabels = "event_labels"
     }
 
     init(from decoder: Decoder) throws {
@@ -201,7 +205,29 @@ struct CashflowDayPoint: Decodable, Identifiable, Sendable {
         projectedBalance = try container.decodeFlexibleDecimal(forKey: .projectedBalance)
         scheduledBillTotal = try container.decodeFlexibleDecimal(forKey: .scheduledBillTotal)
         estimatedSpend = try container.decodeFlexibleDecimal(forKey: .estimatedSpend)
-        scheduledBillNames = try container.decode([String].self, forKey: .scheduledBillNames)
+        scheduledBillNames = try container.decodeIfPresent([String].self, forKey: .scheduledBillNames) ?? []
+        projectedIncome = (try? container.decodeFlexibleDecimal(forKey: .projectedIncome)) ?? 0
+        eventLabels = try container.decodeIfPresent([String].self, forKey: .eventLabels) ?? []
+    }
+}
+
+struct CashflowEvent: Decodable, Identifiable, Sendable {
+    var id: String { "\(date)-\(kind)-\(label)" }
+    let date: String
+    let kind: String
+    let label: String
+    let amount: Decimal
+
+    enum CodingKeys: String, CodingKey {
+        case date, kind, label, amount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(String.self, forKey: .date)
+        kind = try container.decode(String.self, forKey: .kind)
+        label = try container.decode(String.self, forKey: .label)
+        amount = (try? container.decodeFlexibleDecimal(forKey: .amount)) ?? 0
     }
 }
 
@@ -217,6 +243,13 @@ struct CashflowForecastResponse: Decodable, Sendable {
     let endingBalance: Decimal
     let minBalance: Decimal
     let points: [CashflowDayPoint]
+    let daysUntilZero: Int?
+    let overdraftRisk: String
+    let incomeAssumed: Bool
+    let projectedIncomeTotal: Decimal
+    let nextEvents: [CashflowEvent]
+    let assumptions: [String]
+    let confidence: String
 
     enum CodingKeys: String, CodingKey {
         case customerId = "customer_id"
@@ -230,6 +263,12 @@ struct CashflowForecastResponse: Decodable, Sendable {
         case endingBalance = "ending_balance"
         case minBalance = "min_balance"
         case points
+        case daysUntilZero = "days_until_zero"
+        case overdraftRisk = "overdraft_risk"
+        case incomeAssumed = "income_assumed"
+        case projectedIncomeTotal = "projected_income_total"
+        case nextEvents = "next_events"
+        case assumptions, confidence
     }
 
     init(from decoder: Decoder) throws {
@@ -245,6 +284,13 @@ struct CashflowForecastResponse: Decodable, Sendable {
         endingBalance = try container.decodeFlexibleDecimal(forKey: .endingBalance)
         minBalance = try container.decodeFlexibleDecimal(forKey: .minBalance)
         points = try container.decode([CashflowDayPoint].self, forKey: .points)
+        daysUntilZero = try container.decodeIfPresent(Int.self, forKey: .daysUntilZero)
+        overdraftRisk = try container.decodeIfPresent(String.self, forKey: .overdraftRisk) ?? "none"
+        incomeAssumed = try container.decodeIfPresent(Bool.self, forKey: .incomeAssumed) ?? false
+        projectedIncomeTotal = (try? container.decodeFlexibleDecimal(forKey: .projectedIncomeTotal)) ?? 0
+        nextEvents = try container.decodeIfPresent([CashflowEvent].self, forKey: .nextEvents) ?? []
+        assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
+        confidence = try container.decodeIfPresent(String.self, forKey: .confidence) ?? "medium"
     }
 }
 
@@ -334,6 +380,8 @@ struct WhatIfResponse: Decodable, Sendable {
     let affordable: Bool
     let projectedMinBalanceAfter: Decimal
     let note: String
+    let purchaseDate: String?
+    let assumptions: [String]
 
     enum CodingKeys: String, CodingKey {
         case customerId = "customer_id"
@@ -344,6 +392,8 @@ struct WhatIfResponse: Decodable, Sendable {
         case affordable
         case projectedMinBalanceAfter = "projected_min_balance_after"
         case note
+        case purchaseDate = "purchase_date"
+        case assumptions
     }
 
     init(from decoder: Decoder) throws {
@@ -356,5 +406,503 @@ struct WhatIfResponse: Decodable, Sendable {
         affordable = try container.decode(Bool.self, forKey: .affordable)
         projectedMinBalanceAfter = try container.decodeFlexibleDecimal(forKey: .projectedMinBalanceAfter)
         note = try container.decode(String.self, forKey: .note)
+        purchaseDate = try container.decodeIfPresent(String.self, forKey: .purchaseDate)
+        assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
+    }
+}
+
+struct AccountsResponse: Decodable, Sendable {
+    let customerId: String
+    let accounts: [Account]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case accounts
+    }
+}
+
+struct PredictionSnapshot: Decodable, Sendable {
+    let safeToSpend: Decimal
+    let minProjectedBalance: Decimal
+    let endingBalance: Decimal
+    let overdraftRisk: String
+    let daysUntilZero: Int?
+    let scheduledBillsTotal: Decimal
+    let estimatedSpendTotal: Decimal
+
+    enum CodingKeys: String, CodingKey {
+        case safeToSpend = "safe_to_spend"
+        case minProjectedBalance = "min_projected_balance"
+        case endingBalance = "ending_balance"
+        case overdraftRisk = "overdraft_risk"
+        case daysUntilZero = "days_until_zero"
+        case scheduledBillsTotal = "scheduled_bills_total"
+        case estimatedSpendTotal = "estimated_spend_total"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        safeToSpend = try container.decodeFlexibleDecimal(forKey: .safeToSpend)
+        minProjectedBalance = try container.decodeFlexibleDecimal(forKey: .minProjectedBalance)
+        endingBalance = try container.decodeFlexibleDecimal(forKey: .endingBalance)
+        overdraftRisk = try container.decode(String.self, forKey: .overdraftRisk)
+        daysUntilZero = try container.decodeIfPresent(Int.self, forKey: .daysUntilZero)
+        scheduledBillsTotal = try container.decodeFlexibleDecimal(forKey: .scheduledBillsTotal)
+        estimatedSpendTotal = try container.decodeFlexibleDecimal(forKey: .estimatedSpendTotal)
+    }
+}
+
+struct DemoActionResponse: Decodable, Sendable {
+    let customerId: String
+    let mode: String
+    let action: String
+    let resourceId: String
+    let accountId: String
+    let amount: Decimal
+    let description: String
+    let synced: Bool
+    let before: PredictionSnapshot
+    let after: PredictionSnapshot
+    let deltaSafeToSpend: Decimal
+    let deltaMinBalance: Decimal
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case mode, action, description, synced, before, after, note
+        case resourceId = "resource_id"
+        case accountId = "account_id"
+        case amount
+        case deltaSafeToSpend = "delta_safe_to_spend"
+        case deltaMinBalance = "delta_min_balance"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        mode = try container.decode(String.self, forKey: .mode)
+        action = try container.decode(String.self, forKey: .action)
+        resourceId = try container.decode(String.self, forKey: .resourceId)
+        accountId = try container.decode(String.self, forKey: .accountId)
+        amount = try container.decodeFlexibleDecimal(forKey: .amount)
+        description = try container.decode(String.self, forKey: .description)
+        synced = try container.decode(Bool.self, forKey: .synced)
+        before = try container.decode(PredictionSnapshot.self, forKey: .before)
+        after = try container.decode(PredictionSnapshot.self, forKey: .after)
+        deltaSafeToSpend = try container.decodeFlexibleDecimal(forKey: .deltaSafeToSpend)
+        deltaMinBalance = try container.decodeFlexibleDecimal(forKey: .deltaMinBalance)
+        note = try container.decode(String.self, forKey: .note)
+    }
+}
+
+struct DemoStatusResponse: Decodable, Sendable {
+    let customerId: String
+    let mode: String
+    let writesEnabled: Bool
+    let boundNessieCustomerId: String?
+    let envNessieCustomerId: String?
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case mode, message
+        case writesEnabled = "writes_enabled"
+        case boundNessieCustomerId = "bound_nessie_customer_id"
+        case envNessieCustomerId = "env_nessie_customer_id"
+    }
+}
+
+struct SessionResponse: Decodable, Sendable {
+    let appCustomerId: String
+    let mode: String
+    let boundNessieCustomerId: String?
+    let writesEnabled: Bool
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case appCustomerId = "app_customer_id"
+        case mode, message
+        case boundNessieCustomerId = "bound_nessie_customer_id"
+        case writesEnabled = "writes_enabled"
+    }
+}
+
+struct SyncResponse: Decodable, Sendable {
+    let customerId: String
+    let mode: String
+    let status: String
+    let message: String
+    let accountsUpserted: Int
+    let transactionsUpserted: Int
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case mode, status, message
+        case accountsUpserted = "accounts_upserted"
+        case transactionsUpserted = "transactions_upserted"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        mode = try container.decode(String.self, forKey: .mode)
+        status = try container.decode(String.self, forKey: .status)
+        message = try container.decode(String.self, forKey: .message)
+        accountsUpserted = try container.decodeIfPresent(Int.self, forKey: .accountsUpserted) ?? 0
+        transactionsUpserted = try container.decodeIfPresent(Int.self, forKey: .transactionsUpserted) ?? 0
+    }
+}
+
+struct AlertItem: Decodable, Identifiable, Sendable {
+    var id: String { alertId }
+    let alertId: String
+    let kind: String
+    let severity: String
+    let title: String
+    let summary: String
+    let evidence: [String: String]
+    let relatedMetric: String?
+
+    enum CodingKeys: String, CodingKey {
+        case alertId = "alert_id"
+        case kind, severity, title, summary, evidence
+        case relatedMetric = "related_metric"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        alertId = try container.decode(String.self, forKey: .alertId)
+        kind = try container.decode(String.self, forKey: .kind)
+        severity = try container.decode(String.self, forKey: .severity)
+        title = try container.decode(String.self, forKey: .title)
+        summary = try container.decode(String.self, forKey: .summary)
+        evidence = try container.decodeIfPresent([String: String].self, forKey: .evidence) ?? [:]
+        relatedMetric = try container.decodeIfPresent(String.self, forKey: .relatedMetric)
+    }
+}
+
+struct AlertsResponse: Decodable, Sendable {
+    let customerId: String
+    let asOf: String
+    let mode: String
+    let analyticsSource: String
+    let alerts: [AlertItem]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case asOf = "as_of"
+        case mode
+        case analyticsSource = "analytics_source"
+        case alerts
+    }
+}
+
+struct InsightsResponse: Decodable, Sendable {
+    let customerId: String
+    let asOf: String
+    let mode: String
+    let aiGenerated: Bool
+    let model: String?
+    let alerts: [AlertItem]
+    let alertExplanation: String
+    let behaviorSegment: String?
+    let coaching: String
+    let metricGlossary: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case asOf = "as_of"
+        case mode
+        case aiGenerated = "ai_generated"
+        case model, alerts, coaching
+        case alertExplanation = "alert_explanation"
+        case behaviorSegment = "behavior_segment"
+        case metricGlossary = "metric_glossary"
+    }
+}
+
+struct CopilotResponse: Decodable, Sendable {
+    let customerId: String
+    let question: String
+    let answer: String
+    let aiGenerated: Bool
+    let model: String?
+    let groundedMetrics: [String: String]
+    let scenarioNote: String?
+    let refused: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case question, answer, model, refused
+        case aiGenerated = "ai_generated"
+        case groundedMetrics = "grounded_metrics"
+        case scenarioNote = "scenario_note"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        question = try container.decode(String.self, forKey: .question)
+        answer = try container.decode(String.self, forKey: .answer)
+        aiGenerated = try container.decode(Bool.self, forKey: .aiGenerated)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        groundedMetrics = try container.decodeIfPresent([String: String].self, forKey: .groundedMetrics) ?? [:]
+        scenarioNote = try container.decodeIfPresent(String.self, forKey: .scenarioNote)
+        refused = try container.decodeIfPresent(Bool.self, forKey: .refused) ?? false
+    }
+}
+
+struct BankTransaction: Decodable, Identifiable, Sendable {
+    var id: String { transactionId }
+    let transactionId: String
+    let customerId: String
+    let accountId: String
+    let amount: Decimal
+    let kind: String
+    let status: String
+    let description: String
+    let category: String
+    let postedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case transactionId = "transaction_id"
+        case customerId = "customer_id"
+        case accountId = "account_id"
+        case amount, kind, status, description, category
+        case postedAt = "posted_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        transactionId = try container.decode(String.self, forKey: .transactionId)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        accountId = try container.decode(String.self, forKey: .accountId)
+        amount = try container.decodeFlexibleDecimal(forKey: .amount)
+        kind = try container.decode(String.self, forKey: .kind)
+        status = try container.decode(String.self, forKey: .status)
+        description = try container.decode(String.self, forKey: .description)
+        category = try container.decode(String.self, forKey: .category)
+        postedAt = try container.decode(String.self, forKey: .postedAt)
+    }
+}
+
+struct TransactionsResponse: Decodable, Sendable {
+    let customerId: String
+    let accountId: String?
+    let transactions: [BankTransaction]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case accountId = "account_id"
+        case transactions
+    }
+}
+
+struct OverdraftRiskResponse: Decodable, Sendable {
+    let customerId: String
+    let asOf: String
+    let horizonDays: Int
+    let minimumBuffer: Decimal
+    let startingBalance: Decimal
+    let minProjectedBalance: Decimal
+    let endingBalance: Decimal
+    let daysUntilZero: Int?
+    let daysUntilBelowBuffer: Int?
+    let overdraftRisk: String
+    let suggestedDailyCutback: Decimal
+    let incomeAssumed: Bool
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case asOf = "as_of"
+        case horizonDays = "horizon_days"
+        case minimumBuffer = "minimum_buffer"
+        case startingBalance = "starting_balance"
+        case minProjectedBalance = "min_projected_balance"
+        case endingBalance = "ending_balance"
+        case daysUntilZero = "days_until_zero"
+        case daysUntilBelowBuffer = "days_until_below_buffer"
+        case overdraftRisk = "overdraft_risk"
+        case suggestedDailyCutback = "suggested_daily_cutback"
+        case incomeAssumed = "income_assumed"
+        case note
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        asOf = try container.decode(String.self, forKey: .asOf)
+        horizonDays = try container.decode(Int.self, forKey: .horizonDays)
+        minimumBuffer = try container.decodeFlexibleDecimal(forKey: .minimumBuffer)
+        startingBalance = try container.decodeFlexibleDecimal(forKey: .startingBalance)
+        minProjectedBalance = try container.decodeFlexibleDecimal(forKey: .minProjectedBalance)
+        endingBalance = try container.decodeFlexibleDecimal(forKey: .endingBalance)
+        daysUntilZero = try container.decodeIfPresent(Int.self, forKey: .daysUntilZero)
+        daysUntilBelowBuffer = try container.decodeIfPresent(Int.self, forKey: .daysUntilBelowBuffer)
+        overdraftRisk = try container.decode(String.self, forKey: .overdraftRisk)
+        suggestedDailyCutback = try container.decodeFlexibleDecimal(forKey: .suggestedDailyCutback)
+        incomeAssumed = try container.decode(Bool.self, forKey: .incomeAssumed)
+        note = try container.decode(String.self, forKey: .note)
+    }
+}
+
+struct ScenarioSeries: Decodable, Identifiable, Sendable {
+    var id: String { name }
+    let name: String
+    let label: String
+    let endingBalance: Decimal
+    let minBalance: Decimal
+    let daysUntilZero: Int?
+    let overdraftRisk: String
+    let estimatedSpendTotal: Decimal
+    let projectedIncomeTotal: Decimal
+    let safeToSpend: Decimal
+    let deltaMinBalanceVsBaseline: Decimal
+    let points: [CashflowDayPoint]
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, points, note
+        case endingBalance = "ending_balance"
+        case minBalance = "min_balance"
+        case daysUntilZero = "days_until_zero"
+        case overdraftRisk = "overdraft_risk"
+        case estimatedSpendTotal = "estimated_spend_total"
+        case projectedIncomeTotal = "projected_income_total"
+        case safeToSpend = "safe_to_spend"
+        case deltaMinBalanceVsBaseline = "delta_min_balance_vs_baseline"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        label = try container.decode(String.self, forKey: .label)
+        endingBalance = try container.decodeFlexibleDecimal(forKey: .endingBalance)
+        minBalance = try container.decodeFlexibleDecimal(forKey: .minBalance)
+        daysUntilZero = try container.decodeIfPresent(Int.self, forKey: .daysUntilZero)
+        overdraftRisk = try container.decode(String.self, forKey: .overdraftRisk)
+        estimatedSpendTotal = try container.decodeFlexibleDecimal(forKey: .estimatedSpendTotal)
+        projectedIncomeTotal = try container.decodeFlexibleDecimal(forKey: .projectedIncomeTotal)
+        safeToSpend = try container.decodeFlexibleDecimal(forKey: .safeToSpend)
+        deltaMinBalanceVsBaseline = try container.decodeFlexibleDecimal(forKey: .deltaMinBalanceVsBaseline)
+        points = try container.decode([CashflowDayPoint].self, forKey: .points)
+        note = try container.decode(String.self, forKey: .note)
+    }
+}
+
+struct ScenarioSimulationResponse: Decodable, Sendable {
+    let customerId: String
+    let asOf: String
+    let horizonDays: Int
+    let incomeAssumed: Bool
+    let baselineMinBalance: Decimal
+    let scenarios: [ScenarioSeries]
+    let assumptions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case asOf = "as_of"
+        case horizonDays = "horizon_days"
+        case incomeAssumed = "income_assumed"
+        case baselineMinBalance = "baseline_min_balance"
+        case scenarios, assumptions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        asOf = try container.decode(String.self, forKey: .asOf)
+        horizonDays = try container.decode(Int.self, forKey: .horizonDays)
+        incomeAssumed = try container.decode(Bool.self, forKey: .incomeAssumed)
+        baselineMinBalance = try container.decodeFlexibleDecimal(forKey: .baselineMinBalance)
+        scenarios = try container.decode([ScenarioSeries].self, forKey: .scenarios)
+        assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
+    }
+}
+
+struct PaymentCycleConfig: Codable, Sendable {
+    var cadence: String
+    var nextPayday: String?
+    var paycheckAmount: Decimal
+    var minimumBuffer: Decimal
+    var billDayOverrides: [String: Int]
+
+    enum CodingKeys: String, CodingKey {
+        case cadence
+        case nextPayday = "next_payday"
+        case paycheckAmount = "paycheck_amount"
+        case minimumBuffer = "minimum_buffer"
+        case billDayOverrides = "bill_day_overrides"
+    }
+
+    init(
+        cadence: String = "none",
+        nextPayday: String? = nil,
+        paycheckAmount: Decimal = 0,
+        minimumBuffer: Decimal = 250,
+        billDayOverrides: [String: Int] = [:]
+    ) {
+        self.cadence = cadence
+        self.nextPayday = nextPayday
+        self.paycheckAmount = paycheckAmount
+        self.minimumBuffer = minimumBuffer
+        self.billDayOverrides = billDayOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        cadence = try container.decode(String.self, forKey: .cadence)
+        nextPayday = try container.decodeIfPresent(String.self, forKey: .nextPayday)
+        paycheckAmount = try container.decodeFlexibleDecimal(forKey: .paycheckAmount)
+        minimumBuffer = try container.decodeFlexibleDecimal(forKey: .minimumBuffer)
+        billDayOverrides = try container.decodeIfPresent([String: Int].self, forKey: .billDayOverrides) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(cadence, forKey: .cadence)
+        try container.encodeIfPresent(nextPayday, forKey: .nextPayday)
+        try container.encode(NSDecimalNumber(decimal: paycheckAmount).stringValue, forKey: .paycheckAmount)
+        try container.encode(NSDecimalNumber(decimal: minimumBuffer).stringValue, forKey: .minimumBuffer)
+        try container.encode(billDayOverrides, forKey: .billDayOverrides)
+    }
+}
+
+struct PaymentCycleSettingsResponse: Decodable, Sendable {
+    let customerId: String
+    let paymentCycle: PaymentCycleConfig
+    let source: String
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case paymentCycle = "payment_cycle"
+        case source
+    }
+}
+
+struct BehaviorSegmentResponse: Decodable, Sendable {
+    let customerId: String
+    let asOf: String
+    let segment: String
+    let confidence: Decimal
+    let tips: [String]
+    let loanPaymentSuggestions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case customerId = "customer_id"
+        case asOf = "as_of"
+        case segment, confidence, tips
+        case loanPaymentSuggestions = "loan_payment_suggestions"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customerId = try container.decode(String.self, forKey: .customerId)
+        asOf = try container.decode(String.self, forKey: .asOf)
+        segment = try container.decode(String.self, forKey: .segment)
+        confidence = try container.decodeFlexibleDecimal(forKey: .confidence)
+        tips = try container.decodeIfPresent([String].self, forKey: .tips) ?? []
+        loanPaymentSuggestions = try container.decodeIfPresent([String].self, forKey: .loanPaymentSuggestions) ?? []
     }
 }

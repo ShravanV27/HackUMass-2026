@@ -1,6 +1,6 @@
 # HackUMass-2026
 
-Predictive personal finance prototype (SwiftUI + FastAPI) using Nessie v2, TigerData, and Gemini. Mock data is the default so the iOS Simulator works without live credentials.
+**PulseGuard** — predictive personal finance (SwiftUI + FastAPI) using Nessie v2 as the simulated bank, TigerData analytics, and Gemini coaching. Mock data is the default so the iOS Simulator works without live credentials.
 
 ## Layout
 
@@ -87,6 +87,36 @@ Details: [`docs/live_testing.md`](docs/live_testing.md).
 | Live | `USE_MOCK_DATA=false` | Needs `NESSIE_*`, `DATABASE_URL`, optional `GEMINI_*` |
 
 Live mode maps `NESSIE_CUSTOMER_ID` → `DEMO_CUSTOMER_ID`. After a reset, keep `DEMO_CUSTOMER_ID=demo-customer-001` and let `reset_demo.py` update `NESSIE_CUSTOMER_ID`.
+
+### Hackathon demo
+
+- Judge walkthrough: [`docs/demo_script.md`](docs/demo_script.md)
+- Architecture / sponsor roles: [`docs/architecture.md`](docs/architecture.md)
+
+### PulseGuard iOS tabs (Phase 4)
+
+- **Home** — health, safe-to-spend, runway, one cashflow forecast (7/14/30), bills, activity
+- **Insights** — behavior, drift, alerts, Gemini coaching + Copilot
+- **What If?** — baseline vs simulated futures (`/predictions/scenarios`); never writes bank data
+- **Settings** — payment cycle, safety buffer, **Demo Mode** (purchases/deposits/bills), Developer details
+
+### Insights + Copilot (Phase 3)
+
+- `GET /alerts` — deterministic overdraft / drift / category-spike / bill-cluster alerts
+- `GET /insights` — alert briefing + coaching (`ai_generated` when Gemini is used in live mode)
+- `POST /copilot` — grounded Q&A over prediction-engine metrics (optional scenario math)
+
+### Demo Mode (Phase 2 lab, relocated in Phase 4)
+
+Settings → **Demo Mode** + `POST /customers/{id}/demo/{purchase|deposit|bill}` create real sandbox writes (or mock in-memory mutations), force-sync TigerData, and return before/after impact. Hypothetical `/predictions/scenarios` stays on **What If?**.
+
+Enable writes explicitly:
+
+```bash
+ALLOW_NESSIE_WRITES=true
+```
+
+Never deletes or resets Nessie data. Bind an existing sandbox customer via the onboarding screen or `POST /session/bind-customer`.
 
 ### Environment variables
 

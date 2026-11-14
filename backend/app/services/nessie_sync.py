@@ -26,11 +26,16 @@ class SyncResult:
 
 
 def resolve_nessie_customer_id(settings: Settings, app_customer_id: str) -> str:
-    """Map app DEMO_CUSTOMER_ID → NESSIE_CUSTOMER_ID (fallback to demo id)."""
+    """Map app DEMO_CUSTOMER_ID → bound / env NESSIE customer (fallback to demo id)."""
     if app_customer_id != settings.demo_customer_id:
         raise PermissionError(
             "Live sync is only enabled for the authenticated demo customer"
         )
+    from app.services.session_bindings import get_bound_nessie_customer_id
+
+    bound = get_bound_nessie_customer_id(app_customer_id)
+    if bound:
+        return bound
     return settings.nessie_customer_id or app_customer_id
 
 

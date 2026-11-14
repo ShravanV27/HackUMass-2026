@@ -3,13 +3,21 @@ import SwiftUI
 struct RootTabView: View {
     var body: some View {
         TabView {
-            DashboardView()
+            HomeView()
                 .tabItem {
-                    Label("Dashboard", systemImage: "house")
+                    Label("Home", systemImage: "house.fill")
                 }
-            PredictionsView()
+            InsightsView()
                 .tabItem {
-                    Label("Predictions", systemImage: "chart.line.uptrend.xyaxis")
+                    Label("Insights", systemImage: "sparkles")
+                }
+            WhatIfView()
+                .tabItem {
+                    Label("What If?", systemImage: "arrow.triangle.branch")
+                }
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gearshape.fill")
                 }
         }
     }
@@ -17,4 +25,5 @@ struct RootTabView: View {
 
 #Preview {
     RootTabView()
+        .environment(AppSession())
 }

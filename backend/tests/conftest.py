@@ -15,8 +15,11 @@ os.environ.setdefault("DEMO_CUSTOMER_ID", "demo-customer-001")
 
 from app.config import get_settings  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.customer_settings import clear_settings_memory  # noqa: E402
+from app.services.mock_demo_state import clear_mock_demo_state  # noqa: E402
 from app.services.providers.factory import get_provider  # noqa: E402
 from app.services.providers.mock import clear_fixture_cache  # noqa: E402
+from app.services.session_bindings import clear_session_bindings  # noqa: E402
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -58,10 +61,16 @@ def _clear_settings_cache() -> None:
     get_settings.cache_clear()
     get_provider.cache_clear()
     clear_fixture_cache()
+    clear_settings_memory()
+    clear_mock_demo_state()
+    clear_session_bindings()
     yield
     get_settings.cache_clear()
     get_provider.cache_clear()
     clear_fixture_cache()
+    clear_settings_memory()
+    clear_mock_demo_state()
+    clear_session_bindings()
 
 
 @pytest.fixture

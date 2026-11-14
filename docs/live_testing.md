@@ -47,6 +47,17 @@ This runs the full live suite. Gemini tests run automatically when `GEMINI_API_K
 | Gemini | Included with `--run-live` when `GEMINI_API_KEY` is present. |
 | Demo reset | Only `scripts/reset_demo.py --reset` (or `--resume`). |
 
+## Demo Lab live verification (manual)
+
+Offline tests cover mock writes + mocked Nessie. For a real sandbox check (does **not** DELETE/reset):
+
+1. `USE_MOCK_DATA=false`, `ALLOW_NESSIE_WRITES=true`, valid `NESSIE_*` + `DATABASE_URL`.
+2. `POST /session/bind-customer` with an existing Nessie customer id (or use the iOS entry screen).
+3. `POST /customers/demo-customer-001/demo/deposit` with a cash `account_id` → confirm `delta_safe_to_spend > 0` and `synced: true`.
+4. `POST .../demo/purchase` → confirm safe-to-spend / min runway drop and overdraft risk may worsen.
+5. `POST .../demo/bill` → confirm `scheduled_bills_total` / runway reflect the new obligation after sync.
+6. Confirm `/predictions/scenarios` still runs without creating Nessie resources.
+
 ## Markers
 
 - `live` — external read/sync/API contracts (`--run-live`)

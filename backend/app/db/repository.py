@@ -137,6 +137,65 @@ GROUP BY 1, 2
 WITH NO DATA
 """
 
+_CREATE_WEEKLY_SPENDING_CAGG = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS weekly_spending
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('7 days', posted_at) AS week_start,
+    customer_id,
+    SUM(ABS(amount)) AS total_spent,
+    COUNT(*)::bigint AS txn_count
+FROM transactions
+WHERE kind = 'expense'
+  AND status = 'posted'
+GROUP BY 1, 2
+WITH NO DATA
+"""
+
+_DISCRETIONARY_DAILY_SQL = """
+SELECT
+    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    COUNT(*) AS txn_count
+FROM transactions
+WHERE customer_id = %(customer_id)s
+  AND kind = 'expense'
+  AND status = 'posted'
+  AND posted_at >= %(start_at)s
+  AND posted_at < %(end_at)s
+  AND NOT (category = ANY(%(exclude_categories)s))
+GROUP BY 1
+ORDER BY 1
+"""
+
+_WEEKLY_SPENDING_SQL = """
+SELECT
+    date_trunc('week', posted_at AT TIME ZONE 'UTC')::date AS week_start,
+    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    COUNT(*) AS txn_count
+FROM transactions
+WHERE customer_id = %(customer_id)s
+  AND kind = 'expense'
+  AND status = 'posted'
+  AND posted_at >= %(start_at)s
+  AND posted_at < %(end_at)s
+GROUP BY 1
+ORDER BY 1
+"""
+
+_WEEKLY_SPENDING_CAGG_SQL = """
+SELECT
+    week_start::date AS week_start,
+    COALESCE(SUM(total_spent), 0) AS total_spent,
+    COALESCE(SUM(txn_count), 0)::bigint AS txn_count
+FROM weekly_spending
+WHERE customer_id = %(customer_id)s
+  AND week_start >= %(start_at)s
+  AND week_start < %(end_at)s
+GROUP BY 1
+ORDER BY 1
+"""
+
 _HYPERTABLE_CHECK = """
 SELECT 1
 FROM timescaledb_information.hypertables
@@ -231,7 +290,9 @@ class TigerRepository:
 
         cagg_enabled = False
         if hypertable_enabled:
-            cagg_enabled = self._ensure_daily_spending_cagg()
+            daily_ok = self._ensure_daily_spending_cagg()
+            weekly_ok = self._ensure_weekly_spending_cagg()
+            cagg_enabled = daily_ok or weekly_ok
 
         return SchemaEnsureResult(
             hypertable_enabled=hypertable_enabled,
@@ -246,7 +307,9 @@ class TigerRepository:
         """
         global _PROCESS_SCHEMA_RESULT
         with self._conn.cursor() as cur:
+            cur.execute("DROP MATERIALIZED VIEW IF EXISTS weekly_spending CASCADE")
             cur.execute("DROP MATERIALIZED VIEW IF EXISTS daily_spending CASCADE")
+            cur.execute("DROP TABLE IF EXISTS customer_settings CASCADE")
             cur.execute("DROP TABLE IF EXISTS transactions CASCADE")
             cur.execute("DROP TABLE IF EXISTS accounts CASCADE")
         self._conn.commit()
@@ -588,6 +651,113 @@ class TigerRepository:
             self._conn.rollback()
             return False
 
+    def _weekly_spending_cagg_exists(self) -> bool:
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM timescaledb_information.continuous_aggregates
+                    WHERE view_name = 'weekly_spending'
+                    LIMIT 1
+                    """
+                )
+                found = cur.fetchone() is not None
+            return found
+        except psycopg.Error:
+            self._conn.rollback()
+            return False
+
+    def _ensure_weekly_spending_cagg(self) -> bool:
+        if self._weekly_spending_cagg_exists():
+            return True
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(_CREATE_WEEKLY_SPENDING_CAGG)
+            self._conn.commit()
+            return self._weekly_spending_cagg_exists()
+        except psycopg.Error:
+            self._conn.rollback()
+            return False
+
+    def discretionary_daily_spending(
+        self,
+        customer_id: str,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+        exclude_categories: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Posted expense totals by day, excluding bill-like categories.
+
+        Uses indexed SQL (not cagg) so category filters stay accurate for the
+        PredictiveEngine weekday model without an extra full-table scan in Python
+        when the caller prefers TigerData.
+        """
+        params = {
+            "customer_id": customer_id,
+            "start_at": start_at,
+            "end_at": end_at,
+            "exclude_categories": list(exclude_categories or []),
+        }
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_DISCRETIONARY_DAILY_SQL, params)
+            rows = cur.fetchall()
+        return [
+            {
+                "day": row["day"],
+                "total_spent": Decimal(str(row["total_spent"])),
+                "txn_count": int(row["txn_count"]),
+                "source": "sql",
+            }
+            for row in rows
+        ]
+
+    def weekly_spending(
+        self,
+        customer_id: str,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+        prefer_continuous_aggregate: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Week-bucketed spending (cagg when available)."""
+        params = {
+            "customer_id": customer_id,
+            "start_at": start_at,
+            "end_at": end_at,
+        }
+        if prefer_continuous_aggregate and self._weekly_spending_cagg_exists():
+            try:
+                self._refresh_weekly_spending(start_at=start_at, end_at=end_at)
+                with self._conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(_WEEKLY_SPENDING_CAGG_SQL, params)
+                    rows = cur.fetchall()
+                return [
+                    {
+                        "week_start": row["week_start"],
+                        "total_spent": Decimal(str(row["total_spent"])),
+                        "txn_count": int(row["txn_count"]),
+                        "source": "continuous_aggregate",
+                    }
+                    for row in rows
+                ]
+            except psycopg.Error:
+                self._conn.rollback()
+
+        with self._conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_WEEKLY_SPENDING_SQL, params)
+            rows = cur.fetchall()
+        return [
+            {
+                "week_start": row["week_start"],
+                "total_spent": Decimal(str(row["total_spent"])),
+                "txn_count": int(row["txn_count"]),
+                "source": "sql",
+            }
+            for row in rows
+        ]
+
     def _refresh_daily_spending(
         self,
         *,
@@ -599,6 +769,25 @@ class TigerRepository:
                 """
                 CALL refresh_continuous_aggregate(
                     'daily_spending',
+                    %(start_at)s,
+                    %(end_at)s
+                )
+                """,
+                {"start_at": start_at, "end_at": end_at},
+            )
+        self._conn.commit()
+
+    def _refresh_weekly_spending(
+        self,
+        *,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                CALL refresh_continuous_aggregate(
+                    'weekly_spending',
                     %(start_at)s,
                     %(end_at)s
                 )

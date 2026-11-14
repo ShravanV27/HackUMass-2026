@@ -36,6 +36,8 @@ class Settings:
     database_url: str | None = None
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash-lite"
+    # Demo Lab Nessie writes (purchase/deposit/bill). Default off — never destructive.
+    allow_nessie_writes: bool = False
 
 
 @lru_cache
@@ -50,4 +52,5 @@ def get_settings() -> Settings:
         database_url=os.getenv("DATABASE_URL") or None,
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite",
+        allow_nessie_writes=_as_bool(os.getenv("ALLOW_NESSIE_WRITES"), default=False),
     )

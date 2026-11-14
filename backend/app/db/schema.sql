@@ -33,6 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_transactions_customer_posted
 CREATE INDEX IF NOT EXISTS idx_transactions_account_posted
     ON transactions (account_id, posted_at DESC);
 
+CREATE TABLE IF NOT EXISTS customer_settings (
+    customer_id TEXT PRIMARY KEY,
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- TimescaleDB hypertable on posted_at (no-op if already converted).
 SELECT create_hypertable(
     'transactions',

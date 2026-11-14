@@ -14,6 +14,16 @@
 		A10000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* Assets.xcassets */; };
 		A10000000000000000000006 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* RootTabView.swift */; };
 		A10000000000000000000007 /* PredictionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* PredictionsView.swift */; };
+		A10000000000000000000008 /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AppSession.swift */; };
+		A10000000000000000000009 /* CustomerEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* CustomerEntryView.swift */; };
+		A1000000000000000000000A /* DemoLabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* DemoLabView.swift */; };
+		A1000000000000000000000B /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* InsightsView.swift */; };
+		A1000000000000000000000C /* MetricInfoButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* MetricInfoButton.swift */; };
+		A1000000000000000000000D /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* HomeView.swift */; };
+		A1000000000000000000000E /* WhatIfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* WhatIfView.swift */; };
+		A1000000000000000000000F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* SettingsView.swift */; };
+		A10000000000000000000010 /* ChartDate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* ChartDate.swift */; };
+		A10000000000000000000011 /* MoneyFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* MoneyFormatting.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +34,16 @@
 		A20000000000000000000005 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000006 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* PredictionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictionsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSession.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* CustomerEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomerEntryView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* DemoLabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoLabView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000B /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* MetricInfoButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricInfoButton.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* WhatIfView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatIfView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* ChartDate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartDate.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* MoneyFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoneyFormatting.swift; sourceTree = "<group>"; };
 		A30000000000000000000001 /* FinanceApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FinanceApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -79,6 +99,13 @@
 			children = (
 				A50000000000000000000008 /* Dashboard */,
 				A50000000000000000000009 /* Predictions */,
+				A5000000000000000000000A /* Onboarding */,
+				A5000000000000000000000B /* DemoLab */,
+				A5000000000000000000000C /* Insights */,
+				A5000000000000000000000D /* Shared */,
+				A5000000000000000000000E /* Home */,
+				A5000000000000000000000F /* WhatIf */,
+				A50000000000000000000010 /* Settings */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -88,6 +115,7 @@
 			children = (
 				A20000000000000000000003 /* APIClient.swift */,
 				A20000000000000000000004 /* Models.swift */,
+				A20000000000000000000008 /* AppSession.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -114,6 +142,64 @@
 				A20000000000000000000007 /* PredictionsView.swift */,
 			);
 			path = Predictions;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000A /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000009 /* CustomerEntryView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000B /* DemoLab */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000A /* DemoLabView.swift */,
+			);
+			path = DemoLab;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000C /* Insights */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000B /* InsightsView.swift */,
+			);
+			path = Insights;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000D /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000C /* MetricInfoButton.swift */,
+				A20000000000000000000010 /* ChartDate.swift */,
+				A20000000000000000000011 /* MoneyFormatting.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000E /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000D /* HomeView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000F /* WhatIf */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000E /* WhatIfView.swift */,
+			);
+			path = WhatIf;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000010 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000F /* SettingsView.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -189,8 +275,18 @@
 				A10000000000000000000006 /* RootTabView.swift in Sources */,
 				A10000000000000000000002 /* DashboardView.swift in Sources */,
 				A10000000000000000000007 /* PredictionsView.swift in Sources */,
+				A10000000000000000000009 /* CustomerEntryView.swift in Sources */,
+				A1000000000000000000000A /* DemoLabView.swift in Sources */,
+				A1000000000000000000000B /* InsightsView.swift in Sources */,
+				A1000000000000000000000C /* MetricInfoButton.swift in Sources */,
+				A1000000000000000000000D /* HomeView.swift in Sources */,
+				A1000000000000000000000E /* WhatIfView.swift in Sources */,
+				A1000000000000000000000F /* SettingsView.swift in Sources */,
+				A10000000000000000000010 /* ChartDate.swift in Sources */,
+				A10000000000000000000011 /* MoneyFormatting.swift in Sources */,
 				A10000000000000000000003 /* APIClient.swift in Sources */,
 				A10000000000000000000004 /* Models.swift in Sources */,
+				A10000000000000000000008 /* AppSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -236,7 +332,8 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = FinanceApp;
+				INFOPLIST_FILE = FinanceApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PulseGuard;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -267,7 +364,8 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = FinanceApp;
+				INFOPLIST_FILE = FinanceApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PulseGuard;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;

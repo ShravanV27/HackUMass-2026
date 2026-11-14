@@ -1,8 +1,12 @@
 """Deterministic M5 predictive calculations.
 
+Phase 1: cashflow / safe-to-spend / what-if delegate to PredictiveEngine
+(weekday spend model, rolled bills). Drift remains local.
+
 Rules:
-- Never invent future income or bills.
-- Scheduled bills are known obligations only.
+- Never invent future income or bills (unless PaymentCycleConfig is supplied
+  via the engine APIs).
+- Scheduled bills are known obligations only (rolled by cadence in the engine).
 - Estimated spend is derived from historical posted discretionary expenses.
 - Categories covered by *any* known scheduled bills are excluded from
   estimated spend to avoid double-counting rent/utilities already scheduled.
@@ -15,11 +19,15 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.domain.calculations import spendable_cash_balance
+from app.domain.predictive_engine import (
+    build_engine_forecast,
+    compute_engine_safe_to_spend,
+    simulate_what_if_with_engine,
+)
 from app.models.schemas import (
     Account,
-    CashflowDayPoint,
     CashflowForecastResponse,
+    PaymentCycleConfig,
     SafeToSpendResponse,
     ScheduledBill,
     SpendingDriftResponse,
@@ -51,6 +59,7 @@ def bills_due_in_horizon(
     as_of: date,
     horizon_days: int,
 ) -> list[ScheduledBill]:
+    """Backward-compatible single-occurrence filter (no cadence roll)."""
     end = as_of + timedelta(days=horizon_days)
     return [
         bill
@@ -106,83 +115,18 @@ def build_cashflow_forecast(
     as_of: date,
     horizon_days: int = 14,
     lookback_days: int = 30,
+    payment_cycle: PaymentCycleConfig | None = None,
 ) -> CashflowForecastResponse:
-    if horizon_days < 1:
-        raise ValueError("horizon_days must be >= 1")
-
-    # Cash only — credit-card debt must not count as spendable runway.
-    starting = spendable_cash_balance(accounts)
-    customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
-    due = bills_due_in_horizon(
-        customer_bills,
+    """Cash runway via PredictiveEngine (weekday model, rolled bills)."""
+    return build_engine_forecast(
+        customer_id=customer_id,
+        accounts=accounts,
+        transactions=transactions,
+        scheduled_bills=scheduled_bills,
         as_of=as_of,
         horizon_days=horizon_days,
-    )
-    # Exclude categories for *all* known bills (not only those due in-horizon)
-    # so historical rent/utilities do not inflate discretionary estimates.
-    exclude = {b.category for b in customer_bills} | {"Bills"}
-    bill_names = {b.name for b in customer_bills}
-    daily_est = daily_estimated_spend(
-        transactions,
-        customer_id=customer_id,
-        as_of=as_of,
         lookback_days=lookback_days,
-        exclude_categories=exclude,
-        exclude_description_tokens=bill_names,
-    )
-
-    bills_by_day: dict[date, list[ScheduledBill]] = {}
-    for bill in due:
-        bills_by_day.setdefault(bill.next_due_date, []).append(bill)
-
-    points: list[CashflowDayPoint] = []
-    balance = starting
-    min_balance = starting
-    scheduled_total = ZERO
-    estimated_total = ZERO
-
-    points.append(
-        CashflowDayPoint(
-            date=as_of,
-            projected_balance=balance,
-            scheduled_bill_total=ZERO,
-            estimated_spend=ZERO,
-            scheduled_bill_names=[],
-        )
-    )
-
-    for offset in range(1, horizon_days + 1):
-        day = as_of + timedelta(days=offset)
-        day_bills = bills_by_day.get(day, [])
-        bill_total = _money(sum((b.amount for b in day_bills), ZERO))
-        # Estimated spend applies to each forward day; bills are separate.
-        est = daily_est
-        balance = _money(balance - bill_total - est)
-        scheduled_total += bill_total
-        estimated_total += est
-        min_balance = min(min_balance, balance)
-        points.append(
-            CashflowDayPoint(
-                date=day,
-                projected_balance=balance,
-                scheduled_bill_total=bill_total,
-                estimated_spend=est,
-                scheduled_bill_names=[b.name for b in day_bills],
-            )
-        )
-
-    return CashflowForecastResponse(
-        customer_id=customer_id,
-        as_of=as_of,
-        horizon_days=horizon_days,
-        starting_balance=starting,
-        daily_estimated_spend=daily_est,
-        scheduled_bills_in_horizon=due,
-        estimated_spend_total=_money(estimated_total),
-        scheduled_bills_total=_money(scheduled_total),
-        ending_balance=balance,
-        min_balance=_money(min_balance),
-        points=points,
+        payment_cycle=payment_cycle,
     )
 
 
@@ -196,25 +140,9 @@ def compute_safe_to_spend(
     horizon_days: int = 14,
     lookback_days: int = 30,
     minimum_buffer: Decimal = Decimal("250.00"),
+    payment_cycle: PaymentCycleConfig | None = None,
 ) -> SafeToSpendResponse:
-    if minimum_buffer < 0:
-        raise ValueError("minimum_buffer must be non-negative")
-
-    available = spendable_cash_balance(accounts)
-    pending_expenses = ZERO
-    pending_income = ZERO
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.status != TransactionStatus.PENDING:
-            continue
-        # Transfers never count as pending income/expense for safe-to-spend.
-        if txn.kind == TransactionKind.EXPENSE:
-            pending_expenses += abs(txn.amount)
-        elif txn.kind == TransactionKind.INCOME:
-            pending_income += txn.amount
-
-    forecast = build_cashflow_forecast(
+    return compute_engine_safe_to_spend(
         customer_id=customer_id,
         accounts=accounts,
         transactions=transactions,
@@ -222,29 +150,8 @@ def compute_safe_to_spend(
         as_of=as_of,
         horizon_days=horizon_days,
         lookback_days=lookback_days,
-    )
-
-    # Known pending income may clear; never invent additional income.
-    safe = _money(
-        available
-        + pending_income
-        - pending_expenses
-        - forecast.scheduled_bills_total
-        - forecast.estimated_spend_total
-        - minimum_buffer
-    )
-
-    return SafeToSpendResponse(
-        customer_id=customer_id,
-        as_of=as_of,
-        horizon_days=horizon_days,
-        available_balance=available,
-        pending_expenses=_money(pending_expenses),
-        pending_income=_money(pending_income),
-        scheduled_bills_total=forecast.scheduled_bills_total,
-        estimated_spend_total=forecast.estimated_spend_total,
-        minimum_buffer=_money(minimum_buffer),
-        safe_to_spend=safe,
+        minimum_buffer=minimum_buffer,
+        payment_cycle=payment_cycle,
     )
 
 
@@ -311,73 +218,20 @@ def simulate_what_if_purchase(
     horizon_days: int = 14,
     lookback_days: int = 30,
     minimum_buffer: Decimal = Decimal("250.00"),
+    payment_cycle: PaymentCycleConfig | None = None,
 ) -> WhatIfResponse:
-    if purchase_amount <= 0:
-        raise ValueError("purchase_amount must be positive")
-
-    before = compute_safe_to_spend(
+    return simulate_what_if_with_engine(
         customer_id=customer_id,
         accounts=accounts,
         transactions=transactions,
         scheduled_bills=scheduled_bills,
+        purchase_amount=purchase_amount,
+        description=description,
         as_of=as_of,
         horizon_days=horizon_days,
         lookback_days=lookback_days,
         minimum_buffer=minimum_buffer,
-    )
-    after_safe = _money(before.safe_to_spend - purchase_amount)
-    affordable = after_safe >= ZERO
-
-    # Apply purchase against the first non-credit account for min-balance check.
-    cash_indexes = [
-        idx
-        for idx, a in enumerate(accounts)
-        if "credit" not in a.account_type.strip().lower()
-    ]
-    target_idx = cash_indexes[0] if cash_indexes else 0
-    adjusted_accounts = [
-        Account(
-            account_id=a.account_id,
-            customer_id=a.customer_id,
-            name=a.name,
-            account_type=a.account_type,
-            balance=(
-                _money(a.balance - purchase_amount)
-                if idx == target_idx
-                else a.balance
-            ),
-            currency=a.currency,
-        )
-        for idx, a in enumerate(accounts)
-    ]
-    if not cash_indexes:
-        projected_min = _money(-purchase_amount)
-    else:
-        forecast = build_cashflow_forecast(
-            customer_id=customer_id,
-            accounts=adjusted_accounts,
-            transactions=transactions,
-            scheduled_bills=scheduled_bills,
-            as_of=as_of,
-            horizon_days=horizon_days,
-            lookback_days=lookback_days,
-        )
-        projected_min = forecast.min_balance
-
-    note = (
-        "Affordable within safe-to-spend after buffer, bills, and estimated spend."
-        if affordable
-        else "Exceeds safe-to-spend; would consume buffer or projected runway."
-    )
-    return WhatIfResponse(
-        customer_id=customer_id,
-        purchase_amount=_money(purchase_amount),
-        description=description,
-        safe_to_spend_before=before.safe_to_spend,
-        safe_to_spend_after=after_safe,
-        affordable=affordable,
-        projected_min_balance_after=projected_min,
-        note=note,
+        payment_cycle=payment_cycle,
     )
 
 

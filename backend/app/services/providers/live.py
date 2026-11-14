@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import threading
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 
 from app.config import Settings
 from app.db.connection import get_connection
 from app.db.repository import TigerRepository
-from app.models.schemas import Account, ScheduledBill, Transaction
+from app.models.schemas import (
+    Account,
+    ScheduledBill,
+    Transaction,
+    TransactionKind,
+    TransactionStatus,
+)
 from app.services.gemini_client import GeminiClient, GeminiClientError
 from app.services.nessie_client import NessieClient, NessieClientError
 from app.services.nessie_mapper import collect_scheduled_bills
@@ -120,6 +127,91 @@ class LiveDataProvider(DataProvider):
                 summary_text,
                 reason=_safe_gemini_error(exc, self._settings),
             )
+
+    def invalidate_sync(self, customer_id: str) -> None:
+        """Drop sync/bill caches so the next read refreshes from Nessie."""
+        with self._sync_lock:
+            self._synced_customers.discard(customer_id)
+            with self._bills_lock:
+                self._bills_cache.pop(customer_id, None)
+
+    def invalidate_bills_cache(self, customer_id: str) -> None:
+        with self._bills_lock:
+            self._bills_cache.pop(customer_id, None)
+
+    def force_sync(self, customer_id: str) -> dict[str, int]:
+        """Clear sync/bill caches and pull a fresh Nessie → TigerData snapshot.
+
+        Does not write, delete, or reseed Nessie data — GET + upsert only.
+        """
+        with self._sync_lock:
+            self._synced_customers.discard(customer_id)
+            with self._bills_lock:
+                self._bills_cache.pop(customer_id, None)
+            with get_connection(self._settings) as conn:
+                repo = TigerRepository(conn)
+                nessie = self._nessie or NessieClient(self._settings)
+                result = NessieSyncService(
+                    self._settings, nessie, repo
+                ).sync_customer(customer_id)
+                self._synced_customers.add(customer_id)
+            return {
+                "accounts_upserted": result.accounts_upserted,
+                "transactions_upserted": result.transactions_upserted,
+                "accounts_deleted": result.accounts_deleted,
+                "transactions_deleted": result.transactions_deleted,
+            }
+
+    def apply_local_balance_delta(
+        self,
+        customer_id: str,
+        account_id: str,
+        delta: Decimal,
+    ) -> bool:
+        """Patch TigerData balance when Nessie ``balance_cents`` lags a Demo write.
+
+        Also promotes a matching pending txn to posted so safe-to-spend does not
+        double-count (available + pending) for the same cash movement.
+        """
+        if delta == 0:
+            return False
+        with get_connection(self._settings) as conn:
+            repo = TigerRepository(conn)
+            accounts = repo.list_accounts(customer_id)
+            target: Account | None = None
+            for account in accounts:
+                if account.account_id == account_id:
+                    target = account
+                    break
+            if target is None:
+                return False
+            patched = target.model_copy(
+                update={"balance": (target.balance + delta).quantize(Decimal("0.01"))}
+            )
+            repo.upsert_accounts([patched])
+
+            # Avoid STS double-count when the feed still marks the write pending.
+            txns = repo.list_transactions(customer_id, account_id=account_id)
+            abs_delta = abs(delta).quantize(Decimal("0.01"))
+            want_kind = (
+                TransactionKind.INCOME if delta > 0 else TransactionKind.EXPENSE
+            )
+            for txn in txns:
+                if txn.status != TransactionStatus.PENDING:
+                    continue
+                if txn.kind != want_kind:
+                    continue
+                if abs(txn.amount).quantize(Decimal("0.01")) != abs_delta:
+                    continue
+                repo.upsert_transactions(
+                    [
+                        txn.model_copy(
+                            update={"status": TransactionStatus.POSTED}
+                        )
+                    ]
+                )
+                break
+        return True
 
     def _sync(self, customer_id: str, repo: TigerRepository) -> None:
         # Single-flight: PredictionsView fires cashflow/safe/drift in parallel;

@@ -230,6 +230,7 @@ Icon?
 
 # Xcode / Swift / iOS
 DerivedData/
+.derivedData/
 build/
 *.xcuserstate
 xcuserdata/

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from app.models.schemas import Account, ScheduledBill, Transaction
+from app.services import mock_demo_state
 from app.services.providers.base import DataProvider
 
 _FIXTURE_PATH = Path(__file__).with_name("fixtures") / "demo_customer.json"
@@ -29,6 +30,9 @@ class MockDataProvider(DataProvider):
         return "mock"
 
     def list_accounts(self, customer_id: str) -> list[Account]:
+        overlay = mock_demo_state.list_accounts(customer_id)
+        if overlay is not None:
+            return overlay
         data = _load_fixture()
         if data["customer_id"] != customer_id:
             return []
@@ -39,15 +43,22 @@ class MockDataProvider(DataProvider):
         customer_id: str,
         account_id: str | None = None,
     ) -> list[Transaction]:
-        data = _load_fixture()
-        if data["customer_id"] != customer_id:
-            return []
-        txns = [Transaction.model_validate(row) for row in data["transactions"]]
+        overlay = mock_demo_state.list_transactions(customer_id)
+        if overlay is not None:
+            txns = overlay
+        else:
+            data = _load_fixture()
+            if data["customer_id"] != customer_id:
+                return []
+            txns = [Transaction.model_validate(row) for row in data["transactions"]]
         if account_id is not None:
             txns = [t for t in txns if t.account_id == account_id]
         return txns
 
     def list_scheduled_bills(self, customer_id: str) -> list[ScheduledBill]:
+        overlay = mock_demo_state.list_scheduled_bills(customer_id)
+        if overlay is not None:
+            return overlay
         data = _load_fixture()
         if data["customer_id"] != customer_id:
             return []
