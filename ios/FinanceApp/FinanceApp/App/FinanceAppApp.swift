@@ -4,7 +4,7 @@ import SwiftUI
 struct FinanceAppApp: App {
     var body: some Scene {
         WindowGroup {
-            DashboardView()
+            RootTabView()
         }
     }
 }

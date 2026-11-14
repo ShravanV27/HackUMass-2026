@@ -115,5 +115,37 @@
       "posted_at": "2026-11-08T11:00:00Z",
       "counterparty_account_id": "acct-checking-001"
     }
+  ],
+  "scheduled_bills": [
+    {
+      "bill_id": "bill-phone-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "name": "Phone plan",
+      "amount": "45.00",
+      "category": "Utilities",
+      "next_due_date": "2026-11-20",
+      "cadence": "monthly"
+    },
+    {
+      "bill_id": "bill-internet-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "name": "Internet",
+      "amount": "70.00",
+      "category": "Utilities",
+      "next_due_date": "2026-11-25",
+      "cadence": "monthly"
+    },
+    {
+      "bill_id": "bill-rent-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "name": "Rent",
+      "amount": "980.00",
+      "category": "Housing",
+      "next_due_date": "2026-12-05",
+      "cadence": "monthly"
+    }
   ]
 }

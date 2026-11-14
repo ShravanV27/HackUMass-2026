@@ -127,3 +127,100 @@ class SpendingWindowSummary(BaseModel):
     transfer_volume: Decimal
     net_posted: Decimal
     net_including_pending: Decimal
+
+
+class ScheduledBill(BaseModel):
+    """Known upcoming payment — never invented by the model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bill_id: str
+    customer_id: str
+    account_id: str
+    name: str
+    amount: Decimal
+    category: str
+    next_due_date: date
+    cadence: str = "monthly"
+
+
+class CashflowDayPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    projected_balance: Decimal
+    scheduled_bill_total: Decimal
+    estimated_spend: Decimal
+    scheduled_bill_names: list[str]
+
+
+class CashflowForecastResponse(BaseModel):
+    """14-day projection distinguishing scheduled bills vs estimated spend.
+
+    Does not invent future income.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str
+    as_of: date
+    horizon_days: int
+    starting_balance: Decimal
+    daily_estimated_spend: Decimal
+    scheduled_bills_in_horizon: list[ScheduledBill]
+    estimated_spend_total: Decimal
+    scheduled_bills_total: Decimal
+    ending_balance: Decimal
+    min_balance: Decimal
+    points: list[CashflowDayPoint]
+
+
+class SafeToSpendResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str
+    as_of: date
+    horizon_days: int
+    available_balance: Decimal
+    pending_expenses: Decimal
+    pending_income: Decimal
+    scheduled_bills_total: Decimal
+    estimated_spend_total: Decimal
+    minimum_buffer: Decimal
+    safe_to_spend: Decimal
+
+
+class SpendingDriftResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str
+    as_of: date
+    recent_days: int
+    baseline_days: int
+    recent_spend: Decimal
+    baseline_spend: Decimal
+    drift_amount: Decimal
+    drift_pct: Decimal
+    direction: Literal["up", "down", "flat"]
+
+
+class WhatIfRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount: Decimal = Field(gt=0, description="Hypothetical purchase amount")
+    description: str = "Hypothetical purchase"
+    minimum_buffer: Decimal = Field(default=Decimal("250.00"), ge=0)
+    horizon_days: int = Field(default=14, ge=1, le=90)
+
+
+class WhatIfResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str
+    purchase_amount: Decimal
+    description: str
+    safe_to_spend_before: Decimal
+    safe_to_spend_after: Decimal
+    affordable: bool
+    projected_min_balance_after: Decimal
+    note: str

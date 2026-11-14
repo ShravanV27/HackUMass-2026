@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Literal
 
-from app.models.schemas import Account, Transaction
+from app.models.schemas import Account, ScheduledBill, Transaction
 
 
 class DataProvider(ABC):
@@ -27,6 +27,10 @@ class DataProvider(ABC):
         account_id: str | None = None,
     ) -> list[Transaction]:
         raise NotImplementedError
+
+    def list_scheduled_bills(self, customer_id: str) -> list[ScheduledBill]:
+        """Known upcoming bills. Live adapters may return [] until wired."""
+        return []
 
     @abstractmethod
     def explain_dashboard(self, customer_id: str, summary_text: str) -> str:

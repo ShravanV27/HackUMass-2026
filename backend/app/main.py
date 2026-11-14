@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from app.api.routes import accounts, analytics, health, transactions
+from app.api.routes import accounts, analytics, health, predictions, transactions
 
 app = FastAPI(
     title="HackUMass Predictive Finance API",
@@ -19,3 +19,4 @@ app.include_router(health.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
 app.include_router(analytics.router)
+app.include_router(predictions.router)

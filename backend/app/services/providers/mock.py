@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from app.models.schemas import Account, Transaction
+from app.models.schemas import Account, ScheduledBill, Transaction
 from app.services.providers.base import DataProvider
 
 _FIXTURE_PATH = Path(__file__).with_name("fixtures") / "demo_customer.json"
@@ -17,6 +17,10 @@ _FIXTURE_PATH = Path(__file__).with_name("fixtures") / "demo_customer.json"
 def _load_fixture() -> dict[str, Any]:
     with _FIXTURE_PATH.open(encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def clear_fixture_cache() -> None:
+    _load_fixture.cache_clear()
 
 
 class MockDataProvider(DataProvider):
@@ -42,6 +46,15 @@ class MockDataProvider(DataProvider):
         if account_id is not None:
             txns = [t for t in txns if t.account_id == account_id]
         return txns
+
+    def list_scheduled_bills(self, customer_id: str) -> list[ScheduledBill]:
+        data = _load_fixture()
+        if data["customer_id"] != customer_id:
+            return []
+        return [
+            ScheduledBill.model_validate(row)
+            for row in data.get("scheduled_bills", [])
+        ]
 
     def explain_dashboard(self, customer_id: str, summary_text: str) -> str:
         return (

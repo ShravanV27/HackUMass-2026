@@ -37,7 +37,7 @@ pytest
 2. Open `ios/FinanceApp/FinanceApp.xcodeproj` in Xcode.
 3. Select an iPhone Simulator and Run.
 
-The app calls `GET /customers/demo-customer-001/dashboard`.
+The app calls `GET /customers/demo-customer-001/dashboard` and M5 prediction endpoints under `/predictions/*`.
 
 ## Live mode (M4 — optional)
 

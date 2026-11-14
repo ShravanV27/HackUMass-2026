@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from app.config import Settings
 from app.db.repository import TigerRepository
 from app.services.nessie_client import NessieClient
-from app.services.nessie_mapper import collect_account_transactions, map_account
+from app.services.nessie_mapper import (
+    collect_account_transactions,
+    collect_from_transaction_feed,
+    map_account,
+)
 
 
 @dataclass(frozen=True)
@@ -54,18 +58,10 @@ class NessieSyncService:
 
         all_txns = []
         for account in accounts:
-            purchases = self._nessie.list_purchases(account.account_id)
-            deposits = self._nessie.list_deposits(account.account_id)
-            withdrawals = self._nessie.list_withdrawals(account.account_id)
-            transfers = self._nessie.list_transfers(account.account_id)
             all_txns.extend(
-                collect_account_transactions(
+                self._transactions_for_account(
                     app_customer_id=app_customer_id,
                     account_id=account.account_id,
-                    purchases=purchases,
-                    deposits=deposits,
-                    withdrawals=withdrawals,
-                    transfers=transfers,
                 )
             )
         transactions_upserted = self._repo.upsert_transactions(all_txns)
@@ -74,4 +70,32 @@ class NessieSyncService:
             transactions_upserted=transactions_upserted,
             nessie_customer_id=nessie_customer_id,
             app_customer_id=app_customer_id,
+        )
+
+    def _transactions_for_account(
+        self,
+        *,
+        app_customer_id: str,
+        account_id: str,
+    ):
+        # Prefer v2 combined feed — classic /purchases etc. are POST-only (405) on v2.
+        feed = self._nessie.list_account_transactions(account_id)
+        if feed:
+            return collect_from_transaction_feed(
+                app_customer_id=app_customer_id,
+                account_id=account_id,
+                feed=feed,
+            )
+
+        purchases = self._nessie.list_purchases(account_id)
+        deposits = self._nessie.list_deposits(account_id)
+        withdrawals = self._nessie.list_withdrawals(account_id)
+        transfers = self._nessie.list_transfers(account_id)
+        return collect_account_transactions(
+            app_customer_id=app_customer_id,
+            account_id=account_id,
+            purchases=purchases,
+            deposits=deposits,
+            withdrawals=withdrawals,
+            transfers=transfers,
         )

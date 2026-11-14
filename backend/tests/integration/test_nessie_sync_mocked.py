@@ -41,26 +41,24 @@ def test_nessie_sync_upserts_mapped_rows(live_settings: Settings) -> None:
             "customer_id": "nessie-cust-1",
         }
     ]
-    nessie.list_purchases.return_value = [
+    nessie.list_account_transactions.return_value = [
         {
-            "_id": "p1",
+            "id": "p1",
+            "type": "withdrawal",
             "amount": 12.5,
             "status": "completed",
             "description": "Lunch",
-            "purchase_date": "2026-11-01",
-        }
-    ]
-    nessie.list_deposits.return_value = [
+            "transaction_date": "2026-11-01",
+        },
         {
-            "_id": "d1",
+            "id": "d1",
+            "type": "deposit",
             "amount": 200,
             "status": "completed",
             "description": "Pay",
             "transaction_date": "2026-11-02",
-        }
+        },
     ]
-    nessie.list_withdrawals.return_value = []
-    nessie.list_transfers.return_value = []
 
     repo = MagicMock(spec=TigerRepository)
     repo.upsert_accounts.side_effect = lambda accounts: len(accounts)
@@ -81,6 +79,7 @@ def test_nessie_sync_upserts_mapped_rows(live_settings: Settings) -> None:
         TransactionKind.EXPENSE,
         TransactionKind.INCOME,
     }
+    nessie.list_account_transactions.assert_called_once_with("acc-1")
 
 
 def test_live_provider_reads_from_repo_after_sync(live_settings: Settings) -> None:

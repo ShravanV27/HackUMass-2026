@@ -13,13 +13,16 @@ os.environ.setdefault("DEMO_CUSTOMER_ID", "demo-customer-001")
 
 from app.config import get_settings  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.providers.mock import clear_fixture_cache  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache() -> None:
     get_settings.cache_clear()
+    clear_fixture_cache()
     yield
     get_settings.cache_clear()
+    clear_fixture_cache()
 
 
 @pytest.fixture
