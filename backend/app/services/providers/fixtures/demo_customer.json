@@ -1,0 +1,119 @@
+{
+  "customer_id": "demo-customer-001",
+  "accounts": [
+    {
+      "account_id": "acct-checking-001",
+      "customer_id": "demo-customer-001",
+      "name": "Everyday Checking",
+      "account_type": "Checking",
+      "balance": "2450.75",
+      "currency": "USD"
+    },
+    {
+      "account_id": "acct-savings-001",
+      "customer_id": "demo-customer-001",
+      "name": "Rainy Day Savings",
+      "account_type": "Savings",
+      "balance": "5200.00",
+      "currency": "USD"
+    }
+  ],
+  "transactions": [
+    {
+      "transaction_id": "txn-inc-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "3200.00",
+      "kind": "income",
+      "status": "posted",
+      "description": "Payroll ACME Corp",
+      "category": "Income",
+      "posted_at": "2026-11-01T09:00:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-exp-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-145.32",
+      "kind": "expense",
+      "status": "posted",
+      "description": "Groceries",
+      "category": "Food",
+      "posted_at": "2026-11-03T16:20:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-exp-002",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-980.00",
+      "kind": "expense",
+      "status": "posted",
+      "description": "Rent",
+      "category": "Housing",
+      "posted_at": "2026-11-05T12:00:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-exp-003",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-64.50",
+      "kind": "expense",
+      "status": "posted",
+      "description": "Transit pass",
+      "category": "Transport",
+      "posted_at": "2026-11-07T08:15:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-pend-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-52.10",
+      "kind": "expense",
+      "status": "pending",
+      "description": "Coffee shop hold",
+      "category": "Food",
+      "posted_at": "2026-11-13T14:02:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-pend-002",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "200.00",
+      "kind": "income",
+      "status": "pending",
+      "description": "Pending reimbursement",
+      "category": "Income",
+      "posted_at": "2026-11-14T10:00:00Z",
+      "counterparty_account_id": null
+    },
+    {
+      "transaction_id": "txn-xfer-out-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-checking-001",
+      "amount": "-300.00",
+      "kind": "transfer",
+      "status": "posted",
+      "description": "Transfer to savings",
+      "category": "Transfer",
+      "posted_at": "2026-11-08T11:00:00Z",
+      "counterparty_account_id": "acct-savings-001"
+    },
+    {
+      "transaction_id": "txn-xfer-in-001",
+      "customer_id": "demo-customer-001",
+      "account_id": "acct-savings-001",
+      "amount": "300.00",
+      "kind": "transfer",
+      "status": "posted",
+      "description": "Transfer from checking",
+      "category": "Transfer",
+      "posted_at": "2026-11-08T11:00:00Z",
+      "counterparty_account_id": "acct-checking-001"
+    }
+  ]
+}

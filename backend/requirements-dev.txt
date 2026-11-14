@@ -1,0 +1,3 @@
+# Dev/test extras only — does not replace root requirements.txt
+pytest==8.4.2
+httpx==0.28.1
