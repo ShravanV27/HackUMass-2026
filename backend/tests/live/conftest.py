@@ -74,14 +74,23 @@ def synced_live_customer(live_sync_settings: Settings, live_test_customer_id: st
 
 
 def _delete_customer_rows(conn, customer_id: str) -> None:
-    """Scoped cleanup — only the live-test customer namespace."""
+    """Delete rows for the live-test customer and nobody else.
+
+    The predicate is the test customer id. Cleanup must not truncate shared
+    tables or accept another customer's id, even if a caller passes one in.
+    """
+    if customer_id != LIVE_TEST_CUSTOMER_ID:
+        raise RuntimeError(
+            "Refusing cleanup for a customer other than "
+            f"{LIVE_TEST_CUSTOMER_ID}"
+        )
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM transactions WHERE customer_id = %s",
-            (customer_id,),
+            (LIVE_TEST_CUSTOMER_ID,),
         )
         cur.execute(
             "DELETE FROM accounts WHERE customer_id = %s",
-            (customer_id,),
+            (LIVE_TEST_CUSTOMER_ID,),
         )
     conn.commit()

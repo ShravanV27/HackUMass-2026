@@ -13,6 +13,7 @@ from app.config import Settings
 from app.db.repository import (
     CustomerSyncWriteResult,
     TigerRepository,
+    _UPSERT_ACCOUNT,
     _UPSERT_TRANSACTION,
 )
 from app.models.schemas import Account, Transaction, TransactionKind, TransactionStatus
@@ -487,3 +488,40 @@ def test_upsert_sql_refuses_to_reassign_another_customer() -> None:
     assert upserts[0].args[1][0]["customer_id"] == "customer-a"
     assert upserts[1].args[1][0]["customer_id"] == "customer-b"
     assert upserts[0].args[1][0]["posted_at"] == upserts[1].args[1][0]["posted_at"]
+
+
+def test_account_upsert_sql_refuses_cross_customer_collision() -> None:
+    assert "WHERE accounts.customer_id = EXCLUDED.customer_id" in _UPSERT_ACCOUNT
+    repo, cursor = _cursor_repo()
+    original = Account(
+        account_id="shared-acct",
+        customer_id="customer-a",
+        name="Owner",
+        account_type="Checking",
+        balance=Decimal("10.00"),
+    )
+    stolen = original.model_copy(
+        update={"customer_id": "customer-b", "name": "Stolen", "balance": Decimal("999.00")}
+    )
+    repo.commit_customer_sync(
+        customer_id="customer-a",
+        accounts=[original],
+        transactions=[],
+        reconcile=False,
+    )
+    repo.commit_customer_sync(
+        customer_id="customer-b",
+        accounts=[stolen],
+        transactions=[],
+        reconcile=False,
+    )
+    upserts = [
+        call
+        for call in cursor.executemany.call_args_list
+        if isinstance(call.args[0], str) and "INSERT INTO accounts" in call.args[0]
+    ]
+    assert len(upserts) == 2
+    assert "customer_id = EXCLUDED.customer_id" not in upserts[0].args[0].split("WHERE", 1)[0]
+    assert upserts[0].args[1][0]["customer_id"] == "customer-a"
+    assert upserts[1].args[1][0]["customer_id"] == "customer-b"
+    assert upserts[0].args[1][0]["account_id"] == upserts[1].args[1][0]["account_id"]

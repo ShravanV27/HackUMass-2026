@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,12 +32,12 @@ INSERT INTO accounts (
     %(balance)s, %(currency)s, NOW()
 )
 ON CONFLICT (account_id) DO UPDATE SET
-    customer_id = EXCLUDED.customer_id,
     name = EXCLUDED.name,
     account_type = EXCLUDED.account_type,
     balance = EXCLUDED.balance,
     currency = EXCLUDED.currency,
     updated_at = NOW()
+WHERE accounts.customer_id = EXCLUDED.customer_id
 """
 
 _UPSERT_TRANSACTION = """
@@ -891,17 +892,52 @@ def _dedupe_transactions(transactions: list[Transaction]) -> list[Transaction]:
     return list(by_id.values())
 
 
+_DOLLAR_TAG = re.compile(r"\$[A-Za-z0-9_]*\$")
+
+
+def _clean_statement(raw: str) -> str:
+    lines = [
+        line
+        for line in raw.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    return "\n".join(lines).strip()
+
+
 def _split_sql(sql: str) -> list[str]:
+    """Split SQL on semicolons, keeping dollar-quoted function bodies intact."""
     parts: list[str] = []
-    buffer: list[str] = []
-    for line in sql.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
+    start = 0
+    index = 0
+    tag: str | None = None
+    length = len(sql)
+    while index < length:
+        if tag is None and sql.startswith("--", index):
+            newline = sql.find("\n", index)
+            index = length if newline < 0 else newline + 1
             continue
-        buffer.append(line)
-        if stripped.endswith(";"):
-            parts.append("\n".join(buffer).strip().rstrip(";"))
-            buffer = []
-    if buffer:
-        parts.append("\n".join(buffer).strip().rstrip(";"))
-    return [p for p in parts if p]
+        if tag is None and sql[index] == "$":
+            match = _DOLLAR_TAG.match(sql, index)
+            if match:
+                tag = match.group(0)
+                index = match.end()
+                continue
+        if tag is not None:
+            if sql.startswith(tag, index):
+                index += len(tag)
+                tag = None
+            else:
+                index += 1
+            continue
+        if sql[index] == ";":
+            statement = _clean_statement(sql[start:index])
+            if statement:
+                parts.append(statement)
+            index += 1
+            start = index
+            continue
+        index += 1
+    tail = _clean_statement(sql[start:])
+    if tail:
+        parts.append(tail)
+    return parts

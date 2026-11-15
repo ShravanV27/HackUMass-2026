@@ -19,13 +19,16 @@ from app.config import Settings
 _CENT = Decimal("0.01")
 # Dollar amounts, or bare money written with cents. Bare integers are ignored
 # in the model reply so "14 days" is not treated as $14.
+# A trailing "." may end the sentence ("$-1.50."). It must not be treated as
+# another decimal point, or a grounded amount is dropped from the allow-list
+# while the same token in the reply is still treated as a citation.
 _CITED_AMOUNT_RE = re.compile(
     r"\$\s*-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\$\s*-?\d+(?:\.\d+)?"
-    r"|(?<![\w.])-?\d+\.\d{2}(?![\w.])"
+    r"|(?<![\w.])-?\d+\.\d{2}(?![\w])"
 )
 _EVIDENCE_NUMBER_RE = re.compile(
-    r"(?<![\w.])-?\d{1,3}(?:,\d{3})*(?:\.\d+)?(?![\w.])"
-    r"|(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])"
+    r"(?<![\w.])-?\d{1,3}(?:,\d{3})*(?:\.\d+)?(?![\w])"
+    r"|(?<![\w.])-?\d+(?:\.\d+)?(?![\w])"
 )
 
 

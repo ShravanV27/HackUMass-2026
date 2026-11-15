@@ -100,6 +100,34 @@ def test_gemini_rejects_amounts_missing_from_grounded_metrics() -> None:
         )
 
 
+def test_gemini_accepts_negative_amount_before_sentence_period() -> None:
+    """$-1.50. is grounded; the period is punctuation, not a second decimal."""
+    settings = Settings(gemini_api_key="test-key", gemini_model="gemini-3.5-flash-lite")
+    fake = MagicMock()
+    fake.models.generate_content.return_value = MagicMock(
+        text="Your projected daily rate is $-1.50."
+    )
+    client = GeminiClient(settings, client=fake)
+    text = client.explain_dashboard(
+        "c1",
+        "Posted net $12.34; including pending $10.00; projected daily rate $-1.50.",
+    )
+    assert text == "Your projected daily rate is $-1.50."
+
+
+def test_gemini_rejects_sign_flip_and_sentence_final_invention() -> None:
+    settings = Settings(gemini_api_key="test-key", gemini_model="gemini-3.5-flash-lite")
+    fake = MagicMock()
+    fake.models.generate_content.return_value = MagicMock(text="The daily rate is $1.50.")
+    client = GeminiClient(settings, client=fake)
+    with pytest.raises(GeminiClientError, match="grounded metrics"):
+        client.explain_dashboard("c1", "projected daily rate $-1.50.")
+
+    fake.models.generate_content.return_value = MagicMock(text="You are short 99999.99.")
+    with pytest.raises(GeminiClientError, match="grounded metrics"):
+        client.explain_dashboard("c1", "Posted net $12.34.")
+
+
 def test_gemini_accepts_amounts_copied_from_evidence() -> None:
     settings = Settings(gemini_api_key="test-key", gemini_model="gemini-3.5-flash-lite")
     fake = MagicMock()
