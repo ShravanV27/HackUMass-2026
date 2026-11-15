@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -82,6 +83,70 @@ def test_answer_copilot_includes_scenario_grounding() -> None:
     assert "baseline_safe_to_spend" in result.grounded_metrics
     assert result.scenario_note
     assert result.refused is False
+
+
+def test_gemini_rejects_amounts_missing_from_grounded_metrics() -> None:
+    settings = Settings(gemini_api_key="test-key", gemini_model="gemini-3.5-flash-lite")
+    fake = MagicMock()
+    fake.models.generate_content.return_value = MagicMock(
+        text="Your balance is $99999.99 and safe to spend is $100.00."
+    )
+    client = GeminiClient(settings, client=fake)
+    with pytest.raises(GeminiClientError, match="grounded metrics"):
+        client.explain_alerts(
+            "c1",
+            alerts=[],
+            metrics={"safe_to_spend": "100.00"},
+        )
+
+
+def test_gemini_accepts_amounts_copied_from_evidence() -> None:
+    settings = Settings(gemini_api_key="test-key", gemini_model="gemini-3.5-flash-lite")
+    fake = MagicMock()
+    fake.models.generate_content.return_value = MagicMock(
+        text="Safe to spend is $100.00."
+    )
+    client = GeminiClient(settings, client=fake)
+    text = client.explain_alerts(
+        "c1",
+        alerts=[],
+        metrics={"safe_to_spend": "100.00"},
+    )
+    assert text == "Safe to spend is $100.00."
+
+
+def test_live_insights_drop_hallucinated_gemini_amounts() -> None:
+    class _LiveStub(MockDataProvider):
+        @property
+        def mode(self):  # type: ignore[override]
+            return "live"
+
+    fake = MagicMock()
+    fake.models.generate_content.return_value = MagicMock(
+        text="You secretly have $99999.99 available."
+    )
+
+    def _client(settings: Settings) -> GeminiClient:
+        return GeminiClient(settings, client=fake)
+
+    settings = Settings(
+        use_mock_data=False,
+        demo_customer_id="demo-customer-001",
+        gemini_api_key="test-key",
+        gemini_model="gemini-3.5-flash-lite",
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("app.services.insights_service.GeminiClient", _client)
+        insights = build_insights_response(
+            customer_id="demo-customer-001",
+            provider=_LiveStub(),
+            settings=settings,
+            as_of=date(2026, 11, 14),
+        )
+    assert insights.ai_generated is False
+    assert "99999" not in insights.alert_explanation
+    assert "99999" not in insights.coaching
+    assert "Gemini unavailable" in insights.alert_explanation
 
 
 def test_gemini_empty_response_raises() -> None:

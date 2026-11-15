@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -16,6 +16,7 @@ from app.domain.predictive_engine import (
     compute_engine_safe_to_spend,
     compute_overdraft_risk,
     simulate_scenarios,
+    sql_bounds_for_half_open_days,
 )
 from app.domain.scenario_intent import ScenarioIntent, parse_scenario_intent
 from app.models.schemas import (
@@ -466,22 +467,18 @@ def _category_windows(
         try:
             # Warm sync once via provider.
             provider.list_transactions(customer_id)
-            recent_start = datetime.combine(
-                as_of - timedelta(days=recent_days),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
+            recent_start_day = as_of - timedelta(days=recent_days)
+            baseline_end_day = recent_start_day
+            baseline_start_day = baseline_end_day - timedelta(days=baseline_days)
+            # Same half-open days as category_spend_totals: (start, end].
+            recent_start, recent_end = sql_bounds_for_half_open_days(
+                start_exclusive=recent_start_day,
+                end_inclusive=as_of,
             )
-            recent_end = datetime.combine(
-                as_of + timedelta(days=1),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
+            baseline_start, baseline_end = sql_bounds_for_half_open_days(
+                start_exclusive=baseline_start_day,
+                end_inclusive=baseline_end_day,
             )
-            baseline_start = datetime.combine(
-                as_of - timedelta(days=recent_days + baseline_days),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
-            )
-            baseline_end = recent_start
             with get_connection(settings) as conn:
                 repo = TigerRepository(conn)
                 recent_rows = repo.spending_by_category(

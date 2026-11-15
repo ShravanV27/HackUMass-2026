@@ -340,13 +340,18 @@ class TigerRepository:
         accounts: list[Account],
         transactions: list[Transaction],
         reconcile: bool,
+        transactions_complete: bool = True,
     ) -> CustomerSyncWriteResult:
         """Atomically upsert the Nessie snapshot and optionally prune orphans.
 
         Orphan deletes are scoped to ``customer_id`` only and run only when
-        ``reconcile`` is True (caller must certify the Nessie fetch was complete).
+        ``reconcile`` is True (caller must certify the Nessie account fetch was
+        complete). Transaction rows missing from a kept account are removed only
+        when ``transactions_complete`` is also True, so a partial feed cannot
+        wipe history that was not returned.
         """
         keep_ids = {account.account_id for account in accounts}
+        transactions = _dedupe_transactions(transactions)
         with self._conn.transaction():
             with self._conn.cursor() as cur:
                 self._upsert_accounts_cursor(cur, accounts)
@@ -356,7 +361,11 @@ class TigerRepository:
                 if reconcile:
                     transactions_deleted, accounts_deleted = (
                         self._delete_stale_for_customer_cursor(
-                            cur, customer_id=customer_id, keep_account_ids=keep_ids
+                            cur,
+                            customer_id=customer_id,
+                            keep_account_ids=keep_ids,
+                            transactions=transactions,
+                            transactions_complete=transactions_complete,
                         )
                     )
         return CustomerSyncWriteResult(
@@ -417,10 +426,45 @@ class TigerRepository:
         *,
         customer_id: str,
         keep_account_ids: set[str],
+        transactions: list[Transaction] | None = None,
+        transactions_complete: bool = False,
     ) -> tuple[int, int]:
-        """Delete stale transactions then accounts for one customer only."""
+        """Delete stale transactions then accounts for one customer only.
+
+        When the transaction feed is complete, any row whose
+        ``(transaction_id, posted_at)`` is absent from the snapshot is removed,
+        including duplicates left by an unstable ``posted_at``. A partial feed
+        only drops transactions that belong to accounts no longer in the snapshot.
+        """
         keep = list(keep_account_ids)
-        if keep:
+        snapshot = list(transactions or [])
+        if transactions_complete:
+            if snapshot:
+                cur.execute(
+                    """
+                    DELETE FROM transactions AS t
+                    WHERE t.customer_id = %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM unnest(%s::text[], %s::timestamptz[])
+                              AS kept(transaction_id, posted_at)
+                          WHERE kept.transaction_id = t.transaction_id
+                            AND kept.posted_at = t.posted_at
+                      )
+                    """,
+                    (
+                        customer_id,
+                        [txn.transaction_id for txn in snapshot],
+                        [txn.posted_at for txn in snapshot],
+                    ),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM transactions WHERE customer_id = %s",
+                    (customer_id,),
+                )
+            transactions_deleted = cur.rowcount or 0
+        elif keep:
             cur.execute(
                 """
                 DELETE FROM transactions
@@ -430,6 +474,14 @@ class TigerRepository:
                 (customer_id, keep),
             )
             transactions_deleted = cur.rowcount or 0
+        else:
+            cur.execute(
+                "DELETE FROM transactions WHERE customer_id = %s",
+                (customer_id,),
+            )
+            transactions_deleted = cur.rowcount or 0
+
+        if keep:
             cur.execute(
                 """
                 DELETE FROM accounts
@@ -440,12 +492,6 @@ class TigerRepository:
             )
             accounts_deleted = cur.rowcount or 0
         else:
-            # Complete empty snapshot: remove this customer's rows only.
-            cur.execute(
-                "DELETE FROM transactions WHERE customer_id = %s",
-                (customer_id,),
-            )
-            transactions_deleted = cur.rowcount or 0
             cur.execute(
                 "DELETE FROM accounts WHERE customer_id = %s",
                 (customer_id,),
@@ -795,6 +841,14 @@ class TigerRepository:
                 {"start_at": start_at, "end_at": end_at},
             )
         self._conn.commit()
+
+
+def _dedupe_transactions(transactions: list[Transaction]) -> list[Transaction]:
+    """Collapse duplicate Nessie ids. Last row wins so re-sync stays one PK."""
+    by_id: dict[str, Transaction] = {}
+    for txn in transactions:
+        by_id[txn.transaction_id] = txn
+    return list(by_id.values())
 
 
 def _split_sql(sql: str) -> list[str]:

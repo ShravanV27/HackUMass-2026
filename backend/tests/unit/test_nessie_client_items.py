@@ -234,6 +234,26 @@ def test_list_account_transactions_uses_v2_path(settings: Settings) -> None:
     assert session.get.call_args.kwargs["params"]["limit"] == 5000
 
 
+def test_fetch_account_transactions_marks_truncated_page_incomplete(
+    settings: Settings,
+) -> None:
+    session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b"{}"
+    response.json.return_value = {
+        "items": [{"id": "txn_1", "type": "deposit", "amount": 5}],
+        "has_more": True,
+    }
+    session.get.return_value = response
+
+    client = NessieClient(settings, session=session)
+    feed = client.fetch_account_transactions("acct_01abc")
+    assert feed.complete is False
+    assert feed.items[0]["id"] == "txn_1"
+    assert client.list_account_transactions("acct_01abc")[0]["id"] == "txn_1"
+
+
 def test_list_bills_for_customer_unwraps_items(settings: Settings) -> None:
     session = MagicMock()
     response = MagicMock()

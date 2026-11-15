@@ -105,6 +105,32 @@ def _count_weekdays(start: date, end: date) -> dict[int, int]:
     return counts
 
 
+def sql_bounds_for_half_open_days(
+    *,
+    start_exclusive: date,
+    end_inclusive: date,
+) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` matching in-memory ``start_exclusive < day <= end_inclusive``.
+
+    SQL predicates are ``posted_at >= start AND posted_at < end``. Using midnight
+    of ``start_exclusive`` would include that calendar day and shift category
+    windows and discretionary history by one day versus the Python engine.
+    """
+    if end_inclusive < start_exclusive:
+        raise ValueError("end_inclusive must be on or after start_exclusive")
+    start_at = datetime.combine(
+        start_exclusive + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    end_at = datetime.combine(
+        end_inclusive + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    return start_at, end_at
+
+
 def discretionary_daily_observations(
     transactions: list[Transaction],
     *,
@@ -245,12 +271,14 @@ def roll_bill_occurrences(
             continue
 
         current = first
-        # If stored next_due is stale relative to as_of, advance.
+        # If stored next_due is stale relative to as_of, advance. Weekly bills
+        # can be years behind, so the cap is longer than a few dozen steps.
+        # Never emit a date on or before as_of — those are not future obligations.
         guard = 0
-        while current <= as_of and guard < 36:
+        while current <= as_of and guard < 520:
             current = _advance_by_cadence(current, cadence)
             guard += 1
-        while current <= end and guard < 72:
+        while as_of < current <= end and guard < 1040:
             occurrences.append(
                 ScheduledBill(
                     bill_id=f"{bill.bill_id}@{current.isoformat()}",
@@ -694,6 +722,9 @@ def compute_engine_safe_to_spend(
     payment_cycle: PaymentCycleConfig | None = None,
     daily_spend_history: list[DailySpendObservation] | None = None,
     spend_model: Literal["flat", "weekday"] = "weekday",
+    discretionary_multiplier: Decimal = Decimal("1.00"),
+    pause_categories: set[str] | None = None,
+    floor_at_zero: bool = True,
 ) -> SafeToSpendResponse:
     if minimum_buffer < 0:
         raise ValueError("minimum_buffer must be non-negative")
@@ -723,13 +754,16 @@ def compute_engine_safe_to_spend(
         minimum_buffer=minimum_buffer,
         daily_spend_history=daily_spend_history,
         spend_model=spend_model,
+        discretionary_multiplier=discretionary_multiplier,
+        pause_categories=pause_categories,
     )
     # Known pending income may clear; configured paydays are already in the
     # forecast totals when income_assumed — do not double-count them here.
     # Safe-to-spend remains conservative: subtract bills + est spend + buffer,
     # add only *pending* income (not projected paydays). Floor at $0 so the
-    # customer hero never shows a negative "spendable" amount; What If? still
-    # reports signed shortfalls via safe_to_spend_after.
+    # customer hero never shows a negative "spendable" amount. Callers that
+    # report a signed shortfall (What If? / scenarios) pass floor_at_zero=False
+    # so a purchase is subtracted from the real remainder, not from $0.
     safe = _money(
         available
         + pending_income
@@ -738,7 +772,7 @@ def compute_engine_safe_to_spend(
         - forecast.estimated_spend_total
         - minimum_buffer
     )
-    if safe < ZERO:
+    if floor_at_zero and safe < ZERO:
         safe = ZERO
     return SafeToSpendResponse(
         customer_id=customer_id,
@@ -869,9 +903,8 @@ def simulate_scenarios(
     daily_spend_history: list[DailySpendObservation] | None = None,
 ) -> ScenarioSimulationResponse:
     series: list[ScenarioSeries] = []
-    baseline_min = ZERO
-    shared_assumptions: list[str] = []
-    for index, spec in enumerate(request.scenarios):
+    prepared: list[tuple[ScenarioSpec, CashflowForecastResponse, Decimal]] = []
+    for spec in request.scenarios:
         multiplier = Decimal("1.00")
         pause: set[str] | None = None
         purchase = ZERO
@@ -906,6 +939,9 @@ def simulate_scenarios(
             pause_categories=pause,
             extra_paycheck=extra,
         )
+        # Use the scenario's own estimated spend (cuts / pauses). Keep the
+        # signed value so a purchase is not subtracted from a floored $0.
+        # Projected paydays stay out of safe-to-spend (same conservative rule).
         safe = compute_engine_safe_to_spend(
             customer_id=customer_id,
             accounts=accounts,
@@ -917,12 +953,24 @@ def simulate_scenarios(
             minimum_buffer=request.minimum_buffer,
             payment_cycle=payment_cycle,
             daily_spend_history=daily_spend_history,
+            discretionary_multiplier=multiplier,
+            pause_categories=pause,
+            floor_at_zero=False,
         )
-        # Recompute safe under purchase: subtract purchase from baseline safe.
         safe_value = _money(safe.safe_to_spend - purchase)
-        if index == 0 or spec.name == "baseline":
-            baseline_min = forecast.min_balance
-            shared_assumptions = list(forecast.assumptions)
+        prepared.append((spec, forecast, safe_value))
+
+    baseline_forecast = next(
+        (forecast for spec, forecast, _safe in prepared if spec.name == "baseline"),
+        None,
+    )
+    if baseline_forecast is None and prepared:
+        baseline_forecast = prepared[0][1]
+    baseline_min = baseline_forecast.min_balance if baseline_forecast else ZERO
+    shared_assumptions = (
+        list(baseline_forecast.assumptions) if baseline_forecast else []
+    )
+    for spec, forecast, safe_value in prepared:
         delta = _money(forecast.min_balance - baseline_min)
         series.append(
             ScenarioSeries(
@@ -1216,7 +1264,12 @@ def simulate_what_if_with_engine(
         lookback_days=lookback_days,
         minimum_buffer=minimum_buffer,
         payment_cycle=payment_cycle,
+        floor_at_zero=False,
     )
+    # Hero "before" stays non-negative. The shortfall uses the unfloored
+    # remainder so an already-negative safe-to-spend is not collapsed to $0
+    # before the purchase is subtracted.
+    displayed_before = before.safe_to_spend if before.safe_to_spend >= ZERO else ZERO
     after_safe = _money(before.safe_to_spend - purchase_amount)
     # Deferred purchases still reduce safe capacity once committed, but runway
     # timing follows purchase_date in the forecast path.
@@ -1250,7 +1303,7 @@ def simulate_what_if_with_engine(
         customer_id=customer_id,
         purchase_amount=_money(purchase_amount),
         description=description,
-        safe_to_spend_before=before.safe_to_spend,
+        safe_to_spend_before=displayed_before,
         safe_to_spend_after=after_safe,
         affordable=affordable,
         projected_min_balance_after=forecast.min_balance,
@@ -1302,7 +1355,7 @@ def backtest_spend_forecast(
             note="Not enough transaction history to backtest forecasts.",
         )
 
-    oldest = min(t.posted_at.date() for t in customer_txns)
+    oldest = min(_as_utc_date(t.posted_at) for t in customer_txns)
     if oldest > earliest_needed:
         return BacktestResponse(
             customer_id=customer_id,
@@ -1339,7 +1392,7 @@ def backtest_spend_forecast(
         actual = ZERO
         end = window_as_of + timedelta(days=horizon_days)
         for txn in customer_txns:
-            day = txn.posted_at.date()
+            day = _as_utc_date(txn.posted_at)
             if day <= window_as_of or day > end:
                 continue
             if txn.category in exclude:

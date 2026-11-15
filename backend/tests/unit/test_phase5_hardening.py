@@ -209,3 +209,54 @@ def test_backtest_evaluates_windows_with_synthetic_history() -> None:
     assert result.sufficient_history is True
     assert result.windows_evaluated == 3
     assert result.mean_abs_error is not None
+
+
+def test_backtest_buckets_spend_on_utc_date() -> None:
+    """A late evening in a negative offset is the next UTC day, not local."""
+    eastern = timezone(timedelta(hours=-5))
+    txns: list[Transaction] = []
+    for offset in range(90, 0, -1):
+        day = AS_OF - timedelta(days=offset)
+        txns.append(
+            Transaction(
+                transaction_id=f"t-{offset}",
+                customer_id="demo-customer-001",
+                account_id="acc-1",
+                amount=Decimal("-25.00"),
+                kind=TransactionKind.EXPENSE,
+                status=TransactionStatus.POSTED,
+                description="Coffee",
+                category="dining",
+                posted_at=datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc),
+            )
+        )
+    # 2026-11-14 22:00 EST == 2026-11-15 03:00 UTC, outside a horizon ending Nov 14.
+    txns.append(
+        Transaction(
+            transaction_id="late-local",
+            customer_id="demo-customer-001",
+            account_id="acc-1",
+            amount=Decimal("-80.00"),
+            kind=TransactionKind.EXPENSE,
+            status=TransactionStatus.POSTED,
+            description="Late dinner",
+            category="dining",
+            posted_at=datetime(2026, 11, 14, 22, 0, tzinfo=eastern),
+        )
+    )
+    result = backtest_spend_forecast(
+        customer_id="demo-customer-001",
+        accounts=[_cash_account("2000.00")],
+        transactions=txns,
+        scheduled_bills=[],
+        as_of=AS_OF,
+        horizon_days=7,
+        lookback_days=28,
+        windows=1,
+    )
+    assert result.sufficient_history is True
+    window = result.windows[-1]
+    assert window.as_of == date(2026, 11, 7)
+    # Nov 8–13 inclusive at $25. Nov 14 itself is not in the synthetic history,
+    # and the EST evening posts on Nov 15 UTC so it must not be counted.
+    assert window.actual_spend == Decimal("150.00")

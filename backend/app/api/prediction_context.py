@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.config import Settings, get_settings
 from app.db.connection import get_connection
 from app.db.repository import TigerRepository
-from app.domain.predictive_engine import DailySpendObservation
+from app.domain.predictive_engine import (
+    DailySpendObservation,
+    sql_bounds_for_half_open_days,
+)
 from app.models.schemas import Account, PaymentCycleConfig, ScheduledBill, Transaction
 from app.services.customer_settings import get_payment_cycle
 from app.services.providers.base import DataProvider
@@ -62,15 +65,9 @@ def _tiger_discretionary_history(
     bills: list[ScheduledBill],
 ) -> list[DailySpendObservation] | None:
     exclude = sorted({b.category for b in bills if b.customer_id == customer_id} | {"Bills"})
-    start = datetime.combine(
-        as_of - timedelta(days=lookback_days),
-        datetime.min.time(),
-        tzinfo=timezone.utc,
-    )
-    end = datetime.combine(
-        as_of + timedelta(days=1),
-        datetime.min.time(),
-        tzinfo=timezone.utc,
+    start, end = sql_bounds_for_half_open_days(
+        start_exclusive=as_of - timedelta(days=lookback_days),
+        end_inclusive=as_of,
     )
     try:
         with get_connection(settings) as conn:

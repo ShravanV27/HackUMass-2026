@@ -34,6 +34,14 @@ class AccountCollection:
     complete: bool
 
 
+@dataclass(frozen=True)
+class TransactionFeed:
+    """One account's transaction page plus whether it is safe to treat as complete."""
+
+    items: list[dict[str, Any]]
+    complete: bool
+
+
 class NessieClient:
     """Thin wrapper around Nessie REST GET endpoints."""
 
@@ -111,17 +119,25 @@ class NessieClient:
         )
 
     def list_account_transactions(self, account_id: str) -> list[dict[str, Any]]:
-        """Primary v2 history feed (GET allowed).
+        """Primary v2 history feed (GET allowed)."""
+        return self.fetch_account_transactions(account_id).items
+
+    def fetch_account_transactions(self, account_id: str) -> TransactionFeed:
+        """Primary v2 history feed plus completeness (safe to drop missing rows).
 
         Nessie v2 defaults ``limit`` to 100 and caps at 5000. Request the max so
         historical simulations are not truncated to the newest page.
-        Account transaction responses are a single page (no cursor in OpenAPI).
+        A ``has_more`` / ``next`` / ``total`` hint marks the page incomplete so
+        sync will not delete TigerData rows that were never fetched.
         """
-        return _as_list(
-            self._get(
-                f"/accounts/{account_id}/transactions",
-                params={"limit": 5000},
-            )
+        payload = self._get(
+            f"/accounts/{account_id}/transactions",
+            params={"limit": 5000},
+        )
+        items = _as_list(payload)
+        return TransactionFeed(
+            items=items,
+            complete=_is_complete_collection(payload, items),
         )
 
     def list_purchases(self, account_id: str) -> list[dict[str, Any]]:

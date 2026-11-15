@@ -128,7 +128,7 @@ def _memory_spending_window(
                 expenses_posted += spent
                 category_totals[txn.category] += spent
                 category_counts[txn.category] += 1
-                day = posted.date()
+                day = posted.astimezone(timezone.utc).date()
                 daily_totals[day] += spent
                 daily_counts[day] += 1
             else:
