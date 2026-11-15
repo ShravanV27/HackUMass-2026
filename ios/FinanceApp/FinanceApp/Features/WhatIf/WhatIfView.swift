@@ -28,8 +28,12 @@ struct WhatIfView: View {
             .navigationTitle("What If?")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Reset") {
-                        Task { await viewModel.loadBaseline(session: session) }
+                    if viewModel.isRefreshing {
+                        ProgressView()
+                    } else {
+                        Button("Reset") {
+                            Task { await viewModel.loadBaseline(session: session) }
+                        }
                     }
                 }
             }
@@ -52,14 +56,7 @@ struct WhatIfView: View {
                     get: { session.forecastHorizonDays },
                     set: { value in
                         session.forecastHorizonDays = value
-                        Task {
-                            await viewModel.run(
-                                preset: selectedPreset,
-                                amountText: customAmount,
-                                purchaseDateText: purchaseDateText,
-                                session: session
-                            )
-                        }
+                        NotificationCenter.default.post(name: .pulseDataDidChange, object: nil)
                     }
                 )) {
                     Text("7d").tag(7)
@@ -79,6 +76,15 @@ struct WhatIfView: View {
                 }
             }
             .padding()
+            .opacity(viewModel.isRefreshing ? 0.72 : 1)
+        }
+        .refreshable {
+            await viewModel.run(
+                preset: selectedPreset,
+                amountText: customAmount,
+                purchaseDateText: purchaseDateText,
+                session: session
+            )
         }
     }
 
@@ -374,6 +380,7 @@ final class WhatIfViewModel {
 
     private let client = APIClient()
     var state: State = .idle
+    var isRefreshing = false
 
     func loadBaseline(session: AppSession) async {
         await run(preset: .cut20, amountText: "75.00", purchaseDateText: "", session: session)
@@ -385,7 +392,19 @@ final class WhatIfViewModel {
         purchaseDateText: String,
         session: AppSession
     ) async {
-        state = .loading
+        let alreadyLoaded: Bool
+        if case .loaded = state {
+            alreadyLoaded = true
+        } else {
+            alreadyLoaded = false
+        }
+        if alreadyLoaded {
+            isRefreshing = true
+        } else {
+            state = .loading
+        }
+        defer { isRefreshing = false }
+
         let horizon = session.forecastHorizonDays
         let buffer = session.minimumBuffer
         var scenario = preset.scenarioPayload

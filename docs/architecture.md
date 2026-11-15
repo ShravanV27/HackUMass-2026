@@ -51,14 +51,14 @@ Core math lives in `domain/predictive_engine.py`. Recurring bills are rolled acr
 - Mock mode returns deterministic prose (`ai_generated=false`). Live uses `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) with fallbacks on failure.
 - SwiftUI **Insights** tab shows alerts, AI labels, Copilot, and metric info buttons; Predictions shows an alerts banner + info affordances.
 
-## Phase 4 — PulseGuard customer UX
+## Phase 4 — Centsible customer UX
 
-Customer-facing SwiftUI app branded **PulseGuard** (not a Nessie developer console):
+Customer-facing SwiftUI app branded **Centsible** (not a Nessie developer console):
 
 | Tab | Purpose |
 |-----|---------|
-| **Home** | Financial health, safe-to-spend, cash runway, single cashflow forecast (7/14/30), bills, accounts, recent activity, alerts |
-| **Insights** | Behavior, spending drift, alerts, Gemini coaching + Copilot (AI-labeled) |
+| **Home** | Financial health, safe-to-spend (≥ $0), cash runway, single cashflow forecast (7/14/30), bills, accounts, recent activity, needs-attention alerts |
+| **Insights** | Behavior, spending drift, alerts, Gemini coaching + Copilot (AI-labeled) — coaching lives here only |
 | **What If?** | Multi-scenario simulator (`POST /predictions/scenarios`) with baseline vs simulated chart; purchase checks via `/what-if`; never writes bank data |
 | **Settings** | Payment cycle + safety buffer; **Demo Mode** (former Demo Lab) for realistic purchases/deposits/bills; Developer details collapsed |
 
@@ -73,7 +73,7 @@ Demo Mode still uses `/demo/*` + sync; technical bank-link ids stay behind Devel
 
 ### Sponsor technology roles
 
-| Sponsor | Role in PulseGuard |
+| Sponsor | Role in Centsible |
 |---------|--------------------|
 | **Nessie** | Simulated customer bank — accounts, transactions, bills (read + gated Demo Mode writes). Not the product brand. |
 | **TigerData** | Time-series store + SQL analytics for live spending windows, category spikes, and sync from Nessie. |

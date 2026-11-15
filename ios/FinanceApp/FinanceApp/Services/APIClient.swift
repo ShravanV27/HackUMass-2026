@@ -158,6 +158,8 @@ actor APIClient {
         amount: Decimal,
         description: String,
         status: String,
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
         customerId: String = demoCustomerId
     ) async throws -> DemoActionResponse {
         try await post("/customers/\(customerId)/demo/purchase", json: [
@@ -165,8 +167,8 @@ actor APIClient {
             "amount": NSDecimalNumber(decimal: amount).stringValue,
             "description": description,
             "status": status,
-            "minimum_buffer": "250.00",
-            "horizon_days": 14,
+            "minimum_buffer": NSDecimalNumber(decimal: minimumBuffer).stringValue,
+            "horizon_days": horizonDays,
         ])
     }
 
@@ -175,6 +177,8 @@ actor APIClient {
         amount: Decimal,
         description: String,
         status: String,
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
         customerId: String = demoCustomerId
     ) async throws -> DemoActionResponse {
         try await post("/customers/\(customerId)/demo/deposit", json: [
@@ -182,8 +186,8 @@ actor APIClient {
             "amount": NSDecimalNumber(decimal: amount).stringValue,
             "description": description,
             "status": status,
-            "minimum_buffer": "250.00",
-            "horizon_days": 14,
+            "minimum_buffer": NSDecimalNumber(decimal: minimumBuffer).stringValue,
+            "horizon_days": horizonDays,
         ])
     }
 
@@ -193,14 +197,16 @@ actor APIClient {
         amount: Decimal,
         paymentDate: String?,
         recurringDate: Int?,
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
         customerId: String = demoCustomerId
     ) async throws -> DemoActionResponse {
         var body: [String: Any] = [
             "account_id": accountId,
             "payee": payee,
             "amount": NSDecimalNumber(decimal: amount).stringValue,
-            "minimum_buffer": "250.00",
-            "horizon_days": 14,
+            "minimum_buffer": NSDecimalNumber(decimal: minimumBuffer).stringValue,
+            "horizon_days": horizonDays,
         ]
         if let paymentDate {
             body["payment_date"] = paymentDate
@@ -215,12 +221,26 @@ actor APIClient {
         try await post("/customers/\(customerId)/sync", json: [:])
     }
 
-    func fetchAlerts(customerId: String = demoCustomerId) async throws -> AlertsResponse {
-        try await get("/customers/\(customerId)/alerts")
+    func fetchAlerts(
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
+        customerId: String = demoCustomerId
+    ) async throws -> AlertsResponse {
+        let buffer = NSDecimalNumber(decimal: minimumBuffer).stringValue
+        return try await get(
+            "/customers/\(customerId)/alerts?horizon_days=\(horizonDays)&minimum_buffer=\(buffer)"
+        )
     }
 
-    func fetchInsights(customerId: String = demoCustomerId) async throws -> InsightsResponse {
-        try await get("/customers/\(customerId)/insights")
+    func fetchInsights(
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
+        customerId: String = demoCustomerId
+    ) async throws -> InsightsResponse {
+        let buffer = NSDecimalNumber(decimal: minimumBuffer).stringValue
+        return try await get(
+            "/customers/\(customerId)/insights?horizon_days=\(horizonDays)&minimum_buffer=\(buffer)"
+        )
     }
 
     func postCopilot(
@@ -228,13 +248,15 @@ actor APIClient {
         includeScenario: Bool = false,
         scenarioName: String? = nil,
         scenarioAmount: Decimal? = nil,
+        horizonDays: Int = 14,
+        minimumBuffer: Decimal = 250,
         customerId: String = demoCustomerId
     ) async throws -> CopilotResponse {
         var body: [String: Any] = [
             "question": question,
             "include_scenario": includeScenario,
-            "minimum_buffer": "250.00",
-            "horizon_days": 14,
+            "minimum_buffer": NSDecimalNumber(decimal: minimumBuffer).stringValue,
+            "horizon_days": horizonDays,
         ]
         // Intentionally omit scenario_name by default — the API parses the
         // question so a purchase ask is not forced into cut_discretionary_20.

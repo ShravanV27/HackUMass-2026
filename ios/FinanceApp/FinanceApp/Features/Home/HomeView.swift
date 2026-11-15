@@ -22,11 +22,15 @@ struct HomeView: View {
                     content(bundle)
                 }
             }
-            .navigationTitle("PulseGuard")
+            .navigationTitle("Centsible")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Refresh") {
-                        Task { await viewModel.load(session: session) }
+                    if viewModel.isRefreshing {
+                        ProgressView()
+                    } else {
+                        Button("Refresh") {
+                            Task { await viewModel.load(session: session) }
+                        }
                     }
                 }
             }
@@ -48,11 +52,12 @@ struct HomeView: View {
                 billsSection(bundle.cashflow)
                 accountsSection(bundle.accounts)
                 activitySection(bundle.transactions)
-                if !bundle.insight.isEmpty {
-                    insightCard(bundle.insight, aiGenerated: bundle.insightAI)
-                }
             }
             .padding()
+            .opacity(viewModel.isRefreshing ? 0.72 : 1)
+        }
+        .refreshable {
+            await viewModel.load(session: session)
         }
     }
 
@@ -80,7 +85,7 @@ struct HomeView: View {
                             .foregroundStyle(.secondary)
                         MetricInfoButton(title: "Safe to spend", explanation: MetricGlossary.safeToSpend)
                     }
-                    Text(bundle.safe.safeToSpend, format: .currency(code: "USD"))
+                    Text(max(bundle.safe.safeToSpend, Decimal(0)), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .semibold, design: .rounded))
                 }
                 Spacer()
@@ -117,7 +122,7 @@ struct HomeView: View {
                 get: { session.forecastHorizonDays },
                 set: { newValue in
                     session.forecastHorizonDays = newValue
-                    Task { await viewModel.load(session: session) }
+                    NotificationCenter.default.post(name: .pulseDataDidChange, object: nil)
                 }
             )) {
                 Text("7 days").tag(7)
@@ -355,28 +360,6 @@ struct HomeView: View {
         }
     }
 
-    private func insightCard(_ text: String, aiGenerated: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Today's insight")
-                    .font(.headline)
-                if aiGenerated {
-                    Text("AI-generated")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.teal)
-                }
-                MetricInfoButton(title: "AI insights", explanation: MetricGlossary.aiInsight)
-            }
-            Text(text)
-                .font(.body)
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.teal.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
     private func legendDot(color: Color, text: String) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 8, height: 8)
@@ -421,8 +404,6 @@ struct HomeBundle: Sendable {
     var safe: SafeToSpendResponse
     var overdraft: OverdraftRiskResponse
     var alerts: [AlertItem]
-    var insight: String
-    var insightAI: Bool
 }
 
 @MainActor
@@ -437,27 +418,31 @@ final class HomeViewModel {
 
     private let client = APIClient()
     var state: State = .idle
+    var isRefreshing = false
 
     func load(session: AppSession) async {
-        let showSpinner: Bool
+        let alreadyLoaded: Bool
         if case .loaded = state {
-            showSpinner = false
+            alreadyLoaded = true
         } else {
-            showSpinner = true
+            alreadyLoaded = false
         }
-        if showSpinner {
+        if alreadyLoaded {
+            isRefreshing = true
+        } else {
             state = .loading
         }
+        defer { isRefreshing = false }
+
         let horizon = session.forecastHorizonDays
         let buffer = session.minimumBuffer
         do {
-            // Core forecast path first — do not block Home on Gemini latency.
             async let accounts = client.fetchAccounts()
             async let transactions = client.fetchTransactions()
             async let cashflow = client.fetchCashflowForecast(horizonDays: horizon)
             async let safe = client.fetchSafeToSpend(horizonDays: horizon, minimumBuffer: buffer)
             async let overdraft = client.fetchOverdraftRisk(horizonDays: horizon, minimumBuffer: buffer)
-            async let alerts = client.fetchAlerts()
+            async let alerts = client.fetchAlerts(horizonDays: horizon, minimumBuffer: buffer)
 
             let accountsBody = try await accounts
             let txnsBody = try await transactions
@@ -466,27 +451,16 @@ final class HomeViewModel {
                 !$0.accountType.lowercased().contains("credit")
             }
 
-            var bundle = HomeBundle(
-                accounts: cashAccounts.isEmpty ? accountsBody.accounts : cashAccounts,
-                transactions: txnsBody.transactions.sorted { $0.postedAt > $1.postedAt },
-                cashflow: try await cashflow,
-                safe: try await safe,
-                overdraft: try await overdraft,
-                alerts: alertsBody?.alerts ?? [],
-                insight: "",
-                insightAI: false
+            state = .loaded(
+                HomeBundle(
+                    accounts: cashAccounts.isEmpty ? accountsBody.accounts : cashAccounts,
+                    transactions: txnsBody.transactions.sorted { $0.postedAt > $1.postedAt },
+                    cashflow: try await cashflow,
+                    safe: try await safe,
+                    overdraft: try await overdraft,
+                    alerts: alertsBody?.alerts ?? []
+                )
             )
-            state = .loaded(bundle)
-
-            if let insightsBody = try? await client.fetchInsights() {
-                bundle.insight = insightsBody.coaching.isEmpty
-                    ? insightsBody.alertExplanation
-                    : insightsBody.coaching
-                bundle.insightAI = insightsBody.aiGenerated
-                if case .loaded = state {
-                    state = .loaded(bundle)
-                }
-            }
         } catch {
             state = .failed(error.localizedDescription)
         }

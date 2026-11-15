@@ -182,6 +182,33 @@ def test_what_if_marks_unaffordable_purchase() -> None:
     assert result.safe_to_spend_after < Decimal("0.00")
 
 
+def test_safe_to_spend_floors_at_zero() -> None:
+    """Customer-facing STS never goes negative; what-if after may still be signed."""
+    from app.domain.predictive_engine import compute_engine_safe_to_spend
+
+    result = compute_engine_safe_to_spend(
+        customer_id="c1",
+        accounts=[_account("100.00")],
+        transactions=[_expense(1, "30.00")],
+        scheduled_bills=[
+            ScheduledBill(
+                bill_id="b1",
+                customer_id="c1",
+                account_id="a1",
+                name="Rent",
+                amount=Decimal("900.00"),
+                category="Housing",
+                next_due_date=date(2026, 11, 20),
+            )
+        ],
+        as_of=date(2026, 11, 14),
+        horizon_days=14,
+        lookback_days=30,
+        minimum_buffer=Decimal("250.00"),
+    )
+    assert result.safe_to_spend == Decimal("0.00")
+
+
 def test_invalid_horizon_raises() -> None:
     with pytest.raises(ValueError):
         build_cashflow_forecast(

@@ -202,8 +202,8 @@ def metric_glossary() -> dict[str, str]:
         "safe_to_spend": (
             "Cash available after pending items, known bills in the horizon, "
             "estimated discretionary spend, and your minimum buffer. "
-            "Credit-card balances are excluded. Future income is only included "
-            "when a payday is configured."
+            "Never reported below $0. Credit-card balances are excluded. "
+            "Future income is only included when a payday is configured."
         ),
         "overdraft_risk": (
             "none = projected min balance stays at/above buffer; "

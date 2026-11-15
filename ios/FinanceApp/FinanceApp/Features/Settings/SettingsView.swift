@@ -30,7 +30,7 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    Text("PulseGuard preferences shape forecasts and safe-to-spend. Demo Mode lives here so everyday screens stay customer-focused.")
+                    Text("Centsible preferences shape forecasts and safe-to-spend. Demo Mode lives here so everyday screens stay customer-focused.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -38,7 +38,10 @@ struct SettingsView: View {
                 Section("Forecast") {
                     Picker("Lookahead", selection: Binding(
                         get: { session.forecastHorizonDays },
-                        set: { session.forecastHorizonDays = $0 }
+                        set: { newValue in
+                            session.forecastHorizonDays = newValue
+                            NotificationCenter.default.post(name: .pulseDataDidChange, object: nil)
+                        }
                     )) {
                         Text("7 days").tag(7)
                         Text("14 days").tag(14)
@@ -104,7 +107,7 @@ struct SettingsView: View {
                         Text("Payment cycle")
                         MetricInfoButton(
                             title: "Payment cycle",
-                            explanation: "Paydays are the only future income PulseGuard assumes. Leave as None if you do not want income projected."
+                            explanation: "Paydays are the only future income Centsible assumes. Leave as None if you do not want income projected."
                         )
                     }
                 }
@@ -242,7 +245,7 @@ final class SettingsViewModel {
         do {
             let result = try await client.putPaymentCycles(config)
             cycle = result.paymentCycle
-            saveMessage = "Payment preferences saved. Forecasts will use them on the next refresh."
+            saveMessage = "Payment preferences saved. Home, Insights, and What If? are refreshing."
             NotificationCenter.default.post(name: .pulseDataDidChange, object: nil)
         } catch {
             saveError = error.localizedDescription

@@ -1,12 +1,12 @@
-# PulseGuard — Hackathon Demo Script (~4–5 minutes)
+# Centsible — Hackathon Demo Script (~4–5 minutes)
 
 **Prep (before judges):** API running (`USE_MOCK_DATA=false` for live, or mock for safety). iOS Simulator open. Demo Mode writes only if `ALLOW_NESSIE_WRITES=true` **and** you intend to mutate the sandbox — otherwise stay on sample data / What If? (no bank writes).
 
 ---
 
 ### 1. Connect a simulated customer (20s)
-- Launch PulseGuard → **Continue with sample data** (or optional bank link for live).
-- Land on **Home**. Say: *“PulseGuard is a personal finance coach — Nessie is just the simulated bank behind the scenes.”*
+- Launch Centsible → **Continue with sample data** (or optional bank link for live).
+- Land on **Home**. Say: *“Centsible is a personal finance coach — Nessie is just the simulated bank behind the scenes.”*
 
 ### 2. Financial health & spending patterns (45s)
 - Point to **Safe to spend**, **Cash runway**, and health chip (On track / Watch / At risk).

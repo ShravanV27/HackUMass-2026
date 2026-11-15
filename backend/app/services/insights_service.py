@@ -81,19 +81,28 @@ def build_insights_response(
     provider: DataProvider,
     settings: Settings | None = None,
     as_of: date | None = None,
+    horizon_days: int = 14,
+    minimum_buffer: Decimal | None = None,
 ) -> InsightsResponse:
     cfg = settings or get_settings()
     day = as_of or date.today()
+    accounts = provider.list_accounts(customer_id)
+    transactions = provider.list_transactions(customer_id)
+    bills = provider.list_scheduled_bills(customer_id)
+    payment_cycle, _ = get_payment_cycle(customer_id, settings=cfg)
+    buffer = (
+        minimum_buffer
+        if minimum_buffer is not None
+        else payment_cycle.minimum_buffer
+    )
     alerts_resp = build_alerts_response(
         customer_id=customer_id,
         provider=provider,
         settings=cfg,
         as_of=day,
+        horizon_days=horizon_days,
+        minimum_buffer=buffer,
     )
-    accounts = provider.list_accounts(customer_id)
-    transactions = provider.list_transactions(customer_id)
-    bills = provider.list_scheduled_bills(customer_id)
-    payment_cycle, _ = get_payment_cycle(customer_id, settings=cfg)
 
     safe = compute_engine_safe_to_spend(
         customer_id=customer_id,
@@ -101,8 +110,9 @@ def build_insights_response(
         transactions=transactions,
         scheduled_bills=bills,
         as_of=day,
+        horizon_days=horizon_days,
         payment_cycle=payment_cycle,
-        minimum_buffer=payment_cycle.minimum_buffer,
+        minimum_buffer=buffer,
     )
     forecast = build_engine_forecast(
         customer_id=customer_id,
@@ -110,8 +120,9 @@ def build_insights_response(
         transactions=transactions,
         scheduled_bills=bills,
         as_of=day,
+        horizon_days=horizon_days,
         payment_cycle=payment_cycle,
-        minimum_buffer=payment_cycle.minimum_buffer,
+        minimum_buffer=buffer,
     )
     overdraft = compute_overdraft_risk(
         customer_id=customer_id,
@@ -119,8 +130,9 @@ def build_insights_response(
         transactions=transactions,
         scheduled_bills=bills,
         as_of=day,
+        horizon_days=horizon_days,
         payment_cycle=payment_cycle,
-        minimum_buffer=payment_cycle.minimum_buffer,
+        minimum_buffer=buffer,
     )
     behavior = classify_behavior(
         customer_id=customer_id,

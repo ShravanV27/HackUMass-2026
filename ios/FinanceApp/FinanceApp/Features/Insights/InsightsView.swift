@@ -33,14 +33,18 @@ struct InsightsView: View {
             .navigationTitle("Insights")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Refresh") {
-                        Task { await viewModel.load() }
+                    if viewModel.isRefreshing {
+                        ProgressView()
+                    } else {
+                        Button("Refresh") {
+                            Task { await viewModel.load(session: session) }
+                        }
                     }
                 }
             }
-            .task { await viewModel.load() }
+            .task { await viewModel.load(session: session) }
             .onReceive(NotificationCenter.default.publisher(for: .pulseDataDidChange)) { _ in
-                Task { await viewModel.load() }
+                Task { await viewModel.load(session: session) }
             }
         }
     }
@@ -56,6 +60,10 @@ struct InsightsView: View {
                 copilotSection
             }
             .padding()
+            .opacity(viewModel.isRefreshing ? 0.72 : 1)
+        }
+        .refreshable {
+            await viewModel.load(session: session)
         }
     }
 
@@ -172,7 +180,7 @@ struct InsightsView: View {
     private var copilotSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Ask PulseGuard")
+                Text("Ask Centsible")
                     .font(.headline)
                 MetricInfoButton(title: "Copilot", explanation: MetricGlossary.aiInsight)
             }
@@ -200,7 +208,13 @@ struct InsightsView: View {
                 .lineLimit(2...4)
 
             Button {
-                Task { await viewModel.ask(question: question, includeScenario: includeScenario) }
+                Task {
+                    await viewModel.ask(
+                        question: question,
+                        includeScenario: includeScenario,
+                        session: session
+                    )
+                }
             } label: {
                 if viewModel.isAsking {
                     ProgressView()
@@ -283,6 +297,7 @@ final class InsightsViewModel {
     }
 
     var state: State = .idle
+    var isRefreshing = false
     var copilotReply: CopilotResponse?
     var copilotError: String?
     var isAsking = false
@@ -290,10 +305,24 @@ final class InsightsViewModel {
     private let client = APIClient()
 
     @MainActor
-    func load() async {
-        state = .loading
+    func load(session: AppSession) async {
+        let alreadyLoaded: Bool
+        if case .loaded = state {
+            alreadyLoaded = true
+        } else {
+            alreadyLoaded = false
+        }
+        if alreadyLoaded {
+            isRefreshing = true
+        } else {
+            state = .loading
+        }
+        defer { isRefreshing = false }
+
+        let horizon = session.forecastHorizonDays
+        let buffer = session.minimumBuffer
         do {
-            async let insights = client.fetchInsights()
+            async let insights = client.fetchInsights(horizonDays: horizon, minimumBuffer: buffer)
             async let drift = client.fetchSpendingDrift()
             async let behavior = client.fetchBehavior()
             let insightsBody = try await insights
@@ -310,14 +339,16 @@ final class InsightsViewModel {
     }
 
     @MainActor
-    func ask(question: String, includeScenario: Bool) async {
+    func ask(question: String, includeScenario: Bool, session: AppSession) async {
         isAsking = true
         copilotError = nil
         defer { isAsking = false }
         do {
             copilotReply = try await client.postCopilot(
                 question: question,
-                includeScenario: includeScenario
+                includeScenario: includeScenario,
+                horizonDays: session.forecastHorizonDays,
+                minimumBuffer: session.minimumBuffer
             )
         } catch {
             copilotError = error.localizedDescription

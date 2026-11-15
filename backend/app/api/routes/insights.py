@@ -49,12 +49,16 @@ def list_alerts(
 )
 def customer_insights(
     customer_id: str = Depends(verify_customer),
+    horizon_days: int = Query(default=14, ge=1, le=90),
+    minimum_buffer: Decimal = Query(default=Decimal("250.00"), ge=0),
     provider: DataProvider = Depends(get_data_provider),
 ) -> InsightsResponse:
     return build_insights_response(
         customer_id=customer_id,
         provider=provider,
         settings=get_settings(),
+        horizon_days=horizon_days,
+        minimum_buffer=minimum_buffer,
     )
 
 

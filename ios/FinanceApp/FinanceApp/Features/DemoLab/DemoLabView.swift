@@ -109,7 +109,12 @@ struct DemoLabView: View {
 
             if let impact = viewModel.lastImpact {
                 Section("Before / after") {
-                    impactRow("Safe to spend", before: impact.before.safeToSpend, after: impact.after.safeToSpend, delta: impact.deltaSafeToSpend)
+                    impactRow(
+                        "Safe to spend",
+                        before: max(impact.before.safeToSpend, Decimal(0)),
+                        after: max(impact.after.safeToSpend, Decimal(0)),
+                        delta: impact.deltaSafeToSpend
+                    )
                     impactRow("Lowest runway", before: impact.before.minProjectedBalance, after: impact.after.minProjectedBalance, delta: impact.deltaMinBalance)
                     LabeledContent("Health before", value: RiskTone.label(for: impact.before.overdraftRisk))
                     LabeledContent("Health after", value: RiskTone.label(for: impact.after.overdraftRisk))
@@ -175,24 +180,49 @@ struct DemoLabView: View {
         }
         switch action {
         case .purchase:
-            await viewModel.purchase(amount: amount, description: descriptionText, status: status)
+            await viewModel.purchase(
+                amount: amount,
+                description: descriptionText,
+                status: status,
+                session: session
+            )
         case .deposit:
-            await viewModel.deposit(amount: amount, description: descriptionText, status: status)
+            await viewModel.deposit(
+                amount: amount,
+                description: descriptionText,
+                status: status,
+                session: session
+            )
         case .bill:
-            await viewModel.bill(amount: amount, payee: payeeText)
+            await viewModel.bill(amount: amount, payee: payeeText, session: session)
         }
     }
 
     private func applyPreset(_ preset: DemoPreset) async {
         switch preset {
         case .paycheck:
-            await viewModel.deposit(amount: 1800, description: "Received paycheck", status: "posted")
+            await viewModel.deposit(
+                amount: 1800,
+                description: "Received paycheck",
+                status: "posted",
+                session: session
+            )
         case .rent:
-            await viewModel.bill(amount: 1200, payee: "Rent")
+            await viewModel.bill(amount: 1200, payee: "Rent", session: session)
         case .groceries:
-            await viewModel.purchase(amount: 64.50, description: "Bought groceries", status: "posted")
+            await viewModel.purchase(
+                amount: 64.50,
+                description: "Bought groceries",
+                status: "posted",
+                session: session
+            )
         case .coffee:
-            await viewModel.purchase(amount: 6.75, description: "Coffee run", status: "posted")
+            await viewModel.purchase(
+                amount: 6.75,
+                description: "Coffee run",
+                status: "posted",
+                session: session
+            )
         }
     }
 }
@@ -277,31 +307,45 @@ final class DemoLabViewModel {
     }
 
     @MainActor
-    func purchase(amount: Decimal, description: String, status: String) async {
+    func purchase(
+        amount: Decimal,
+        description: String,
+        status: String,
+        session: AppSession
+    ) async {
         await run {
             try await client.postDemoPurchase(
                 accountId: selectedAccountId,
                 amount: amount,
                 description: description,
-                status: status
+                status: status,
+                horizonDays: session.forecastHorizonDays,
+                minimumBuffer: session.minimumBuffer
             )
         }
     }
 
     @MainActor
-    func deposit(amount: Decimal, description: String, status: String) async {
+    func deposit(
+        amount: Decimal,
+        description: String,
+        status: String,
+        session: AppSession
+    ) async {
         await run {
             try await client.postDemoDeposit(
                 accountId: selectedAccountId,
                 amount: amount,
                 description: description,
-                status: status
+                status: status,
+                horizonDays: session.forecastHorizonDays,
+                minimumBuffer: session.minimumBuffer
             )
         }
     }
 
     @MainActor
-    func bill(amount: Decimal, payee: String) async {
+    func bill(amount: Decimal, payee: String, session: AppSession) async {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -313,7 +357,9 @@ final class DemoLabViewModel {
                 payee: payee,
                 amount: amount,
                 paymentDate: due,
-                recurringDate: nil
+                recurringDate: nil,
+                horizonDays: session.forecastHorizonDays,
+                minimumBuffer: session.minimumBuffer
             )
         }
     }

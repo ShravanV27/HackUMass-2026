@@ -1,6 +1,6 @@
 # HackUMass-2026
 
-**PulseGuard** — predictive personal finance (SwiftUI + FastAPI) using Nessie v2 as the simulated bank, TigerData analytics, and Gemini coaching. Mock data is the default so the iOS Simulator works without live credentials.
+**Centsible** — predictive personal finance (SwiftUI + FastAPI) using Nessie v2 as the simulated bank, TigerData analytics, and Gemini coaching. Mock data is the default so the iOS Simulator works without live credentials.
 
 ## Layout
 
@@ -93,7 +93,7 @@ Live mode maps `NESSIE_CUSTOMER_ID` → `DEMO_CUSTOMER_ID`. After a reset, keep 
 - Judge walkthrough: [`docs/demo_script.md`](docs/demo_script.md)
 - Architecture / sponsor roles: [`docs/architecture.md`](docs/architecture.md)
 
-### PulseGuard iOS tabs (Phase 4)
+### Centsible iOS tabs (Phase 4)
 
 - **Home** — health, safe-to-spend, runway, one cashflow forecast (7/14/30), bills, activity
 - **Insights** — behavior, drift, alerts, Gemini coaching + Copilot

@@ -61,7 +61,7 @@ struct CustomerEntryView: View {
                     .disabled(isWorking)
                 }
             }
-            .navigationTitle("Welcome to PulseGuard")
+            .navigationTitle("Welcome to Centsible")
             .task { await loadSession() }
         }
     }
@@ -80,7 +80,7 @@ struct CustomerEntryView: View {
                 bankLinkId = bound
             }
         } catch {
-            modeHint = "Start the PulseGuard backend on this Mac (port 8000), then try again."
+            modeHint = "Start the Centsible backend on this Mac (port 8000), then try again."
         }
     }
 

@@ -727,7 +727,9 @@ def compute_engine_safe_to_spend(
     # Known pending income may clear; configured paydays are already in the
     # forecast totals when income_assumed — do not double-count them here.
     # Safe-to-spend remains conservative: subtract bills + est spend + buffer,
-    # add only *pending* income (not projected paydays).
+    # add only *pending* income (not projected paydays). Floor at $0 so the
+    # customer hero never shows a negative "spendable" amount; What If? still
+    # reports signed shortfalls via safe_to_spend_after.
     safe = _money(
         available
         + pending_income
@@ -736,6 +738,8 @@ def compute_engine_safe_to_spend(
         - forecast.estimated_spend_total
         - minimum_buffer
     )
+    if safe < ZERO:
+        safe = ZERO
     return SafeToSpendResponse(
         customer_id=customer_id,
         as_of=as_of,

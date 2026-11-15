@@ -16,16 +16,19 @@ struct MetricInfoButton: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showInfo) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(.headline)
-                Text(explanation)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                    Text(explanation)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding()
-            .frame(maxWidth: 280, alignment: .leading)
+            .frame(maxWidth: 300, maxHeight: 320, alignment: .topLeading)
             .presentationCompactAdaptation(.popover)
         }
     }
@@ -33,7 +36,7 @@ struct MetricInfoButton: View {
 
 enum MetricGlossary {
     static let safeToSpend =
-        "Cash you can spend after pending items, known bills, typical daily spending, and your safety buffer. Credit cards are excluded. Future paychecks only count when you set a payment cycle in Settings."
+        "Cash you can spend after pending items, known bills, typical daily spending, and your safety buffer. Never shown below $0. Credit cards are excluded. Future paychecks only count when you set a payment cycle in Settings."
     static let overdraftRisk =
         "On track = stays above your buffer. Watch closely = dips below the buffer. At risk = may go below zero. Suggested cutbacks come from the forecast engine, not AI."
     static let spendingDrift =
