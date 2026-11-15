@@ -771,9 +771,10 @@ struct ScenarioSeries: Decodable, Identifiable, Sendable {
     let deltaMinBalanceVsBaseline: Decimal
     let points: [CashflowDayPoint]
     let note: String
+    let assumptions: [String]
 
     enum CodingKeys: String, CodingKey {
-        case name, label, points, note
+        case name, label, points, note, assumptions
         case endingBalance = "ending_balance"
         case minBalance = "min_balance"
         case daysUntilZero = "days_until_zero"
@@ -798,6 +799,7 @@ struct ScenarioSeries: Decodable, Identifiable, Sendable {
         deltaMinBalanceVsBaseline = try container.decodeFlexibleDecimal(forKey: .deltaMinBalanceVsBaseline)
         points = try container.decode([CashflowDayPoint].self, forKey: .points)
         note = try container.decode(String.self, forKey: .note)
+        assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
     }
 }
 
@@ -891,18 +893,47 @@ struct PaymentCycleSettingsResponse: Decodable, Sendable {
     }
 }
 
+struct BehaviorEvidence: Decodable, Sendable {
+    let weekendSpendShare: Decimal
+    let weekdaySpendShare: Decimal
+    let spendVolatility: Decimal
+    let driftPct: Decimal
+    let billToCashRatio: Decimal
+    let topCategories: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case weekendSpendShare = "weekend_spend_share"
+        case weekdaySpendShare = "weekday_spend_share"
+        case spendVolatility = "spend_volatility"
+        case driftPct = "drift_pct"
+        case billToCashRatio = "bill_to_cash_ratio"
+        case topCategories = "top_categories"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        weekendSpendShare = try container.decodeFlexibleDecimal(forKey: .weekendSpendShare)
+        weekdaySpendShare = try container.decodeFlexibleDecimal(forKey: .weekdaySpendShare)
+        spendVolatility = try container.decodeFlexibleDecimal(forKey: .spendVolatility)
+        driftPct = try container.decodeFlexibleDecimal(forKey: .driftPct)
+        billToCashRatio = try container.decodeFlexibleDecimal(forKey: .billToCashRatio)
+        topCategories = try container.decodeIfPresent([String].self, forKey: .topCategories) ?? []
+    }
+}
+
 struct BehaviorSegmentResponse: Decodable, Sendable {
     let customerId: String
     let asOf: String
     let segment: String
     let confidence: Decimal
+    let evidence: BehaviorEvidence?
     let tips: [String]
     let loanPaymentSuggestions: [String]
 
     enum CodingKeys: String, CodingKey {
         case customerId = "customer_id"
         case asOf = "as_of"
-        case segment, confidence, tips
+        case segment, confidence, evidence, tips
         case loanPaymentSuggestions = "loan_payment_suggestions"
     }
 
@@ -912,6 +943,7 @@ struct BehaviorSegmentResponse: Decodable, Sendable {
         asOf = try container.decode(String.self, forKey: .asOf)
         segment = try container.decode(String.self, forKey: .segment)
         confidence = try container.decodeFlexibleDecimal(forKey: .confidence)
+        evidence = try container.decodeIfPresent(BehaviorEvidence.self, forKey: .evidence)
         tips = try container.decodeIfPresent([String].self, forKey: .tips) ?? []
         loanPaymentSuggestions = try container.decodeIfPresent([String].self, forKey: .loanPaymentSuggestions) ?? []
     }

@@ -501,17 +501,20 @@ def _category_windows(
     from app.domain.alerts import category_spend_totals
 
     txns = provider.list_transactions(customer_id)
+    accounts = provider.list_accounts(customer_id)
     recent = category_spend_totals(
         txns,
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days),
         end=as_of,
+        accounts=accounts,
     )
     baseline = category_spend_totals(
         txns,
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days + baseline_days),
         end=as_of - timedelta(days=recent_days),
+        accounts=accounts,
     )
     return recent, baseline, "memory"
 

@@ -152,6 +152,7 @@ def spending_drift(
     return compute_spending_drift(
         customer_id=customer_id,
         transactions=provider.list_transactions(customer_id),
+        accounts=provider.list_accounts(customer_id),
         as_of=date.today(),
         recent_days=recent_days,
         baseline_days=baseline_days,

@@ -105,11 +105,15 @@ struct HomeView: View {
             }
 
             if let days = bundle.overdraft.daysUntilZero {
-                Text("Projected to run out of cash in \(days) days without changes.")
+                Text(days <= 0
+                     ? "Cash is already at or below zero."
+                     : "Projected to run out of cash in \(days) \(days == 1 ? "day" : "days") without changes.")
                     .font(.footnote)
                     .foregroundStyle(.red)
             } else if let days = bundle.overdraft.daysUntilBelowBuffer {
-                Text("May dip below your safety buffer in about \(days) days.")
+                Text(days <= 0
+                     ? "Cash is already under your safety buffer."
+                     : "May dip below your safety buffer in about \(days) \(days == 1 ? "day" : "days").")
                     .font(.footnote)
                     .foregroundStyle(.orange)
             } else {

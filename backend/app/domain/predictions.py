@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.domain.calculations import counted_posted_spending
 from app.domain.predictive_engine import (
     build_engine_forecast,
     compute_engine_safe_to_spend,
@@ -162,6 +163,7 @@ def compute_spending_drift(
     as_of: date,
     recent_days: int = 7,
     baseline_days: int = 28,
+    accounts: list[Account] | None = None,
 ) -> SpendingDriftResponse:
     if recent_days < 1 or baseline_days < 1:
         raise ValueError("recent_days and baseline_days must be >= 1")
@@ -171,11 +173,15 @@ def compute_spending_drift(
     baseline_start = baseline_end - timedelta(days=baseline_days)
 
     recent = _posted_expense_total(
-        transactions, customer_id, start=recent_start, end=as_of
+        transactions, customer_id, start=recent_start, end=as_of, accounts=accounts
     )
     # Normalize baseline to a recent-length comparable average * recent_days.
     baseline_raw = _posted_expense_total(
-        transactions, customer_id, start=baseline_start, end=baseline_end
+        transactions,
+        customer_id,
+        start=baseline_start,
+        end=baseline_end,
+        accounts=accounts,
     )
     baseline_comparable = _money(
         (baseline_raw / Decimal(baseline_days)) * Decimal(recent_days)
@@ -241,16 +247,19 @@ def _posted_expense_total(
     *,
     start: date,
     end: date,
+    accounts: list[Account] | None = None,
 ) -> Decimal:
-    total = ZERO
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if start < day <= end:
-            total += abs(txn.amount)
+    total = sum(
+        (
+            amount
+            for _txn, amount in counted_posted_spending(
+                customer_id,
+                transactions,
+                accounts,
+                start=start,
+                end=end,
+            )
+        ),
+        ZERO,
+    )
     return _money(total)

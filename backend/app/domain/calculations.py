@@ -13,7 +13,7 @@ Rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.models.schemas import (
@@ -32,6 +32,14 @@ CENT = Decimal("0.01")
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _as_utc_date(value: datetime | date) -> date:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.date()
+        return value.astimezone(timezone.utc).date()
+    return value
 
 
 def _is_credit_card(account_type: str) -> bool:
@@ -143,6 +151,61 @@ def credit_card_cash_flow(
         card_payments=card_payments,
         unmatched_payment=unmatched,
     )
+
+
+def counted_posted_spending(
+    customer_id: str,
+    transactions: list[Transaction],
+    accounts: list[Account] | None = None,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[tuple[Transaction, Decimal]]:
+    """Posted expenses that count as spending exactly once.
+
+    Credit-card purchases count. A cash payment counts only for the portion
+    with no matching purchase in this same set (the swipes are outside the
+    window). ``start`` is exclusive and ``end`` is inclusive on the UTC day.
+    Without an account list every posted expense counts, which can pair a
+    swipe with its payment.
+    """
+    credit_ids = (
+        credit_account_ids(accounts, customer_id) if accounts is not None else None
+    )
+    purchases = ZERO
+    payments = ZERO
+    payment_rows: list[Transaction] = []
+    kept: list[tuple[Transaction, Decimal]] = []
+    for txn in transactions:
+        if txn.customer_id != customer_id or txn.status != TransactionStatus.POSTED:
+            continue
+        if txn.kind != TransactionKind.EXPENSE:
+            continue
+        if start is not None or end is not None:
+            day = _as_utc_date(txn.posted_at)
+            if start is not None and day <= start:
+                continue
+            if end is not None and day > end:
+                continue
+        amount = abs(txn.amount)
+        if credit_ids is not None and txn.account_id in credit_ids:
+            purchases += amount
+            kept.append((txn, amount))
+            continue
+        if (
+            credit_ids is not None
+            and is_card_payment(txn, credit_ids)
+            and txn.amount < 0
+        ):
+            payments += amount
+            payment_rows.append(txn)
+            continue
+        kept.append((txn, amount))
+    if credit_ids is not None and payment_rows:
+        unmatched = payments - (purchases if purchases <= payments else payments)
+        if unmatched > ZERO:
+            kept.append((payment_rows[-1], unmatched))
+    return kept
 
 
 def summarize_money_flow(

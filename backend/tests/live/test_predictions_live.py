@@ -92,6 +92,7 @@ def test_safe_to_spend_and_drift_with_live_data(
     drift = compute_spending_drift(
         customer_id=customer_id,
         transactions=txns,
+        accounts=accounts,
         as_of=date.today(),
         recent_days=7,
         baseline_days=28,

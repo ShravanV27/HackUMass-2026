@@ -214,7 +214,7 @@ struct WhatIfView: View {
 
             if !bundle.assumptions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Assumptions")
+                    Text("Why this forecast")
                         .font(.caption.weight(.semibold))
                     ForEach(bundle.assumptions.prefix(4), id: \.self) { note in
                         Text("• \(note)")
@@ -451,14 +451,31 @@ final class WhatIfViewModel {
                     simulated: simulated,
                     purchaseWhatIf: purchase,
                     recommendation: Self.recommend(baseline: baseline, simulated: simulated, preset: preset),
-                    assumptions: simulation.assumptions.isEmpty
-                        ? simulated.note.isEmpty ? [] : [simulated.note]
-                        : simulation.assumptions
+                    assumptions: Self.assumptionLines(
+                        shared: simulation.assumptions,
+                        scenario: simulated.assumptions,
+                        fallbackNote: simulated.note
+                    )
                 )
             )
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Shared forecast notes, then lines that exist only on this scenario.
+    /// Those extra lines are why this future differs from today.
+    private static func assumptionLines(
+        shared: [String],
+        scenario: [String],
+        fallbackNote: String
+    ) -> [String] {
+        let known = Set(shared)
+        let whyChanged = scenario.filter { !known.contains($0) }
+        if shared.isEmpty && whyChanged.isEmpty {
+            return fallbackNote.isEmpty ? [] : [fallbackNote]
+        }
+        return whyChanged + shared
     }
 
     private static func recommend(baseline: ScenarioSeries, simulated: ScenarioSeries, preset: WhatIfPreset) -> String {

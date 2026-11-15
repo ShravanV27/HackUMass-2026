@@ -18,7 +18,11 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Literal
 
-from app.domain.calculations import credit_account_ids, spendable_cash_balance
+from app.domain.calculations import (
+    counted_posted_spending,
+    credit_account_ids,
+    spendable_cash_balance,
+)
 from app.models.schemas import (
     Account,
     BehaviorEvidence,
@@ -412,10 +416,14 @@ def days_until_threshold(
     as_of: date,
     threshold: Decimal,
 ) -> int | None:
+    """Days until balance is at or below ``threshold``.
+
+    A balance that is already there on ``as_of`` is 0, not "tomorrow".
+    """
     for point in points:
-        if point.date <= as_of:
-            continue
         if point.projected_balance <= threshold:
+            if point.date <= as_of:
+                return 0
             return (point.date - as_of).days
     return None
 
@@ -787,10 +795,15 @@ def compute_engine_safe_to_spend(
     available = spendable_cash_balance(accounts)
     pending_expenses = ZERO
     pending_income = ZERO
+    # A pending swipe or refund on a credit card has not moved cash. The
+    # checking payment is the cash event, same as posted card purchases.
+    card_ids = credit_account_ids(accounts, customer_id)
     for txn in transactions:
         if txn.customer_id != customer_id:
             continue
         if txn.status != TransactionStatus.PENDING:
+            continue
+        if txn.account_id in card_ids:
             continue
         if txn.kind == TransactionKind.EXPENSE:
             pending_expenses += abs(txn.amount)
@@ -1071,14 +1084,28 @@ def classify_behavior(
 ) -> BehaviorSegmentResponse:
     customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
     exclude = {b.category for b in customer_bills} | {"Bills"}
-    observations = discretionary_daily_observations(
+    bill_tokens = {b.name.lower() for b in customer_bills if b.name}
+    window_start = as_of - timedelta(days=lookback_days)
+    by_day: dict[date, Decimal] = {}
+    # Spending, not cash timing: a card swipe counts on its day and the
+    # matching payment does not count again.
+    for txn, amount in counted_posted_spending(
+        customer_id,
         transactions,
-        customer_id=customer_id,
-        as_of=as_of,
-        lookback_days=lookback_days,
-        exclude_categories=exclude,
-        exclude_description_tokens={b.name for b in customer_bills},
-    )
+        accounts,
+        start=window_start,
+        end=as_of,
+    ):
+        if txn.category in exclude:
+            continue
+        if bill_tokens and any(token in txn.description.lower() for token in bill_tokens):
+            continue
+        day = _as_utc_date(txn.posted_at)
+        by_day[day] = by_day.get(day, ZERO) + amount
+    observations = [
+        DailySpendObservation(day=day, total_spent=_money(total))
+        for day, total in sorted(by_day.items())
+    ]
     weekend = ZERO
     weekday = ZERO
     daily_totals = [obs.total_spent for obs in observations]
@@ -1110,6 +1137,7 @@ def classify_behavior(
 
     drift_pct = _drift_pct(
         transactions,
+        accounts=accounts,
         customer_id=customer_id,
         as_of=as_of,
         recent_days=recent_days,
@@ -1131,18 +1159,14 @@ def classify_behavior(
     )
 
     category_totals: dict[str, Decimal] = {}
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if as_of - timedelta(days=lookback_days) < day <= as_of:
-            category_totals[txn.category] = category_totals.get(
-                txn.category, ZERO
-            ) + abs(txn.amount)
+    for txn, amount in counted_posted_spending(
+        customer_id,
+        transactions,
+        accounts,
+        start=as_of - timedelta(days=lookback_days),
+        end=as_of,
+    ):
+        category_totals[txn.category] = category_totals.get(txn.category, ZERO) + amount
     top_categories = [
         name
         for name, _ in sorted(
@@ -1197,18 +1221,21 @@ def _posted_expense_total(
     *,
     start: date,
     end: date,
+    accounts: list[Account] | None = None,
 ) -> Decimal:
-    total = ZERO
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if start < day <= end:
-            total += abs(txn.amount)
+    total = sum(
+        (
+            amount
+            for _txn, amount in counted_posted_spending(
+                customer_id,
+                transactions,
+                accounts,
+                start=start,
+                end=end,
+            )
+        ),
+        ZERO,
+    )
     return _money(total)
 
 
@@ -1219,15 +1246,20 @@ def _drift_pct(
     as_of: date,
     recent_days: int,
     baseline_days: int,
+    accounts: list[Account] | None = None,
 ) -> Decimal:
     recent_start = as_of - timedelta(days=recent_days)
     baseline_end = recent_start
     baseline_start = baseline_end - timedelta(days=baseline_days)
     recent = _posted_expense_total(
-        transactions, customer_id, start=recent_start, end=as_of
+        transactions, customer_id, start=recent_start, end=as_of, accounts=accounts
     )
     baseline_raw = _posted_expense_total(
-        transactions, customer_id, start=baseline_start, end=baseline_end
+        transactions,
+        customer_id,
+        start=baseline_start,
+        end=baseline_end,
+        accounts=accounts,
     )
     baseline_comparable = _money(
         (baseline_raw / Decimal(baseline_days)) * Decimal(recent_days)
