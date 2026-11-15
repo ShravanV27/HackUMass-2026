@@ -7,12 +7,31 @@ narrates precomputed metrics / alerts and must not invent balances.
 from __future__ import annotations
 
 import json
+import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from google import genai
 from google.genai import types
 
 from app.config import Settings
+
+_CENT = Decimal("0.01")
+# Dollar amounts, or bare money written with cents. Bare integers are ignored
+# in the model reply so "14 days" is not treated as $14.
+# A trailing "." may end the sentence ("$-1.50."). It must not be treated as
+# another decimal point, or a grounded amount is dropped from the allow-list
+# while the same token in the reply is still treated as a citation.
+# Dollar amounts must consume the whole number. A pattern that stops after
+# three digits would read $7085.19 as $708 and reject a real safe-to-spend.
+_CITED_AMOUNT_RE = re.compile(
+    r"\$\s*-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+    r"|(?<![\w.])-?\d+\.\d{2}(?![\w])"
+)
+_EVIDENCE_NUMBER_RE = re.compile(
+    r"(?<![\w.])-?\d{1,3}(?:,\d{3})*(?:\.\d+)?(?![\w])"
+    r"|(?<![\w.])-?\d+(?:\.\d+)?(?![\w])"
+)
 
 
 class GeminiClientError(RuntimeError):
@@ -108,13 +127,22 @@ class GeminiClient:
         }
         prompt = (
             "You are a grounded finance copilot. Answer the user question using only "
-            "grounded_metrics. If the question requires a number not present, refuse "
-            "politely and list which metrics you do have. Keep the answer under 120 words. "
+            "grounded_metrics. Keep the answer under 120 words. "
+            "When asked why safe-to-spend is what it is, explain safe_to_spend_formula "
+            "using available_balance, pending_income, pending_expenses, "
+            "scheduled_bills_total, estimated_spend_total, and minimum_buffer. "
+            "Those fields are the calculation. Do not say the calculation steps are "
+            "missing when they are present. Say that projected paydays are excluded. "
+            "Refuse only when the question needs a metric that is not in grounded_metrics, "
+            "and then list the metrics you do have. "
+            "Never introduce a dollar amount that is not one of the provided values. "
             "If needs_clarification is true, ask the clarification question — do not invent "
             "a scenario. If scenario_name is present, compare baseline_* vs scenario_* "
             "(safe-to-spend, min/ending balance, overdraft risk) and cite those deltas. "
             "Never claim a purchase is affordable unless scenario_affordable is exactly "
-            "'true'. Never describe a 20% cut unless scenario_name is cut_discretionary_20. "
+            "'true'. If scenario_purchase_applied is 'false', say the purchase is outside "
+            "this horizon and was not applied; do not call it affordable or unaffordable. "
+            "Never describe a 20% cut unless scenario_name is cut_discretionary_20. "
             f"{_GROUNDING_RULES} "
             f"JSON: {json.dumps(payload, default=str)}"
         )
@@ -132,4 +160,47 @@ class GeminiClient:
         text = getattr(response, "text", None)
         if not text or not str(text).strip():
             raise GeminiClientError("Gemini returned an empty explanation")
-        return str(text).strip()
+        cleaned = str(text).strip()
+        _reject_ungrounded_amounts(cleaned, prompt)
+        return cleaned
+
+
+def _evidence_section(prompt: str) -> str:
+    """Numbers the model is allowed to cite live after the metrics payload."""
+    for marker in ("JSON:", "Metrics:"):
+        index = prompt.rfind(marker)
+        if index != -1:
+            return prompt[index:]
+    return prompt
+
+
+def _quantize_token(raw: str) -> Decimal | None:
+    token = raw.replace("$", "").replace(",", "").strip()
+    if not token:
+        return None
+    try:
+        return Decimal(token).quantize(_CENT, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return None
+
+
+def _reject_ungrounded_amounts(text: str, prompt: str) -> None:
+    """Refuse narration that cites a dollar amount absent from the evidence.
+
+    Callers already fall back to deterministic copy when this raises.
+    The error text deliberately omits the invented figure.
+    """
+    evidence = _evidence_section(prompt)
+    allowed: set[Decimal] = set()
+    for match in _EVIDENCE_NUMBER_RE.finditer(evidence):
+        amount = _quantize_token(match.group(0))
+        if amount is not None:
+            allowed.add(amount)
+    for match in _CITED_AMOUNT_RE.finditer(text):
+        amount = _quantize_token(match.group(0))
+        if amount is None:
+            continue
+        if amount not in allowed:
+            raise GeminiClientError(
+                "Gemini cited an amount that is not in the grounded metrics"
+            )

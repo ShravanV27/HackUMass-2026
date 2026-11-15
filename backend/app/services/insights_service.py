@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -15,7 +15,9 @@ from app.domain.predictive_engine import (
     classify_behavior,
     compute_engine_safe_to_spend,
     compute_overdraft_risk,
+    purchase_applies_in_horizon,
     simulate_scenarios,
+    sql_bounds_for_half_open_days,
 )
 from app.domain.scenario_intent import ScenarioIntent, parse_scenario_intent
 from app.models.schemas import (
@@ -260,6 +262,7 @@ def answer_copilot(
         "baseline_ending_balance": str(forecast.ending_balance),
         "baseline_overdraft_risk": overdraft.overdraft_risk,
     }
+    _attach_safe_to_spend_breakdown(grounded, safe=safe, forecast=forecast)
 
     intent = parse_scenario_intent(
         body.question,
@@ -400,7 +403,14 @@ def _apply_scenario_grounding(
     by_name = {s.name: s for s in sim.scenarios}
     baseline = by_name.get("baseline") or sim.scenarios[0]
     chosen = by_name.get(intent.name) or sim.scenarios[-1]
-    _attach_scenario_metrics(grounded, baseline=baseline, chosen=chosen, intent=intent)
+    _attach_scenario_metrics(
+        grounded,
+        baseline=baseline,
+        chosen=chosen,
+        intent=intent,
+        as_of=as_of,
+        horizon_days=horizon_days,
+    )
     return chosen.note
 
 
@@ -410,6 +420,8 @@ def _attach_scenario_metrics(
     baseline: ScenarioSeries,
     chosen: ScenarioSeries,
     intent: ScenarioIntent,
+    as_of: date,
+    horizon_days: int,
 ) -> None:
     grounded["scenario_name"] = chosen.name
     grounded["scenario_label"] = chosen.label
@@ -441,8 +453,18 @@ def _attach_scenario_metrics(
     )
 
     if chosen.name == "one_time_purchase":
-        affordable = chosen.safe_to_spend >= ZERO
-        grounded["scenario_affordable"] = "true" if affordable else "false"
+        applied = purchase_applies_in_horizon(
+            intent.amount or ZERO,
+            intent.on_date,
+            as_of=as_of,
+            horizon_days=horizon_days,
+        )
+        grounded["scenario_purchase_applied"] = "true" if applied else "false"
+        if applied:
+            affordable = chosen.safe_to_spend >= ZERO
+            grounded["scenario_affordable"] = "true" if affordable else "false"
+        else:
+            grounded["scenario_affordable"] = "not_in_horizon"
         grounded["purchase_amount"] = grounded.get(
             "scenario_amount", str(intent.amount or ZERO)
         )
@@ -466,22 +488,18 @@ def _category_windows(
         try:
             # Warm sync once via provider.
             provider.list_transactions(customer_id)
-            recent_start = datetime.combine(
-                as_of - timedelta(days=recent_days),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
+            recent_start_day = as_of - timedelta(days=recent_days)
+            baseline_end_day = recent_start_day
+            baseline_start_day = baseline_end_day - timedelta(days=baseline_days)
+            # Same half-open days as category_spend_totals: (start, end].
+            recent_start, recent_end = sql_bounds_for_half_open_days(
+                start_exclusive=recent_start_day,
+                end_inclusive=as_of,
             )
-            recent_end = datetime.combine(
-                as_of + timedelta(days=1),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
+            baseline_start, baseline_end = sql_bounds_for_half_open_days(
+                start_exclusive=baseline_start_day,
+                end_inclusive=baseline_end_day,
             )
-            baseline_start = datetime.combine(
-                as_of - timedelta(days=recent_days + baseline_days),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
-            )
-            baseline_end = recent_start
             with get_connection(settings) as conn:
                 repo = TigerRepository(conn)
                 recent_rows = repo.spending_by_category(
@@ -504,17 +522,20 @@ def _category_windows(
     from app.domain.alerts import category_spend_totals
 
     txns = provider.list_transactions(customer_id)
+    accounts = provider.list_accounts(customer_id)
     recent = category_spend_totals(
         txns,
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days),
         end=as_of,
+        accounts=accounts,
     )
     baseline = category_spend_totals(
         txns,
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days + baseline_days),
         end=as_of - timedelta(days=recent_days),
+        accounts=accounts,
     )
     return recent, baseline, "memory"
 
@@ -560,6 +581,13 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
             amount = grounded.get("purchase_amount") or grounded.get(
                 "scenario_amount", "?"
             )
+            if grounded.get("scenario_purchase_applied") == "false":
+                when = grounded.get("scenario_on_date", "that date")
+                return (
+                    f"A ${amount} purchase on {when} is outside this forecast "
+                    "horizon, so it was not applied and safe-to-spend stays "
+                    f"${baseline_safe}."
+                )
             affordable = grounded.get("scenario_affordable") == "true"
             verdict = "affordable" if affordable else "not affordable"
             return (
@@ -578,8 +606,15 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
 
     if "safe" in q and "afford" not in q:
         return (
-            f"Safe to spend is ${grounded['safe_to_spend']} after bills, "
-            f"estimated spend (${grounded['estimated_spend_total']}), and buffer."
+            f"Safe to spend is ${grounded['safe_to_spend']}. "
+            f"Python computes that as spendable cash ${grounded['available_balance']} "
+            f"plus pending income ${grounded['pending_income']}, "
+            f"minus pending expenses ${grounded['pending_expenses']}, "
+            f"scheduled bills ${grounded['scheduled_bills_total']}, "
+            f"typical discretionary spend ${grounded['estimated_spend_total']}, "
+            f"and the ${grounded['minimum_buffer']} safety buffer. "
+            "The displayed amount is floored at $0. "
+            "Future paychecks are not included."
         )
     if "overdraft" in q or "zero" in q or "runway" in q:
         return (
@@ -591,6 +626,42 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
         f"Using grounded metrics: safe to spend ${grounded['safe_to_spend']}, "
         f"min runway ${grounded['min_projected_balance']}, "
         f"overdraft {grounded['overdraft_risk']}."
+    )
+
+
+def _attach_safe_to_spend_breakdown(
+    grounded: dict[str, Any],
+    *,
+    safe: Any,
+    forecast: Any,
+) -> None:
+    """Add the Python safe-to-spend inputs so Copilot can explain the result.
+
+    Every dollar here is already computed by the engine. Gemini may cite these
+    values and must not invent others. Projected paydays stay out of the formula.
+    """
+    before_floor = (
+        safe.available_balance
+        + safe.pending_income
+        - safe.pending_expenses
+        - safe.scheduled_bills_total
+        - safe.estimated_spend_total
+        - safe.minimum_buffer
+    ).quantize(Decimal("0.01"))
+    grounded["available_balance"] = str(safe.available_balance)
+    grounded["pending_income"] = str(safe.pending_income)
+    grounded["pending_expenses"] = str(safe.pending_expenses)
+    grounded["minimum_buffer"] = str(safe.minimum_buffer)
+    grounded["projected_income_total"] = str(forecast.projected_income_total)
+    grounded["income_assumed"] = "true" if forecast.income_assumed else "false"
+    grounded["income_included_in_safe_to_spend"] = "false"
+    grounded["display_floor"] = "0.00"
+    grounded["safe_to_spend_before_floor"] = str(before_floor)
+    grounded["safe_to_spend_formula"] = (
+        "safe_to_spend_before_floor = available_balance + pending_income "
+        "- pending_expenses - scheduled_bills_total - estimated_spend_total "
+        "- minimum_buffer. Displayed safe_to_spend floors that result at 0. "
+        "projected_income_total is not part of safe-to-spend."
     )
 
 

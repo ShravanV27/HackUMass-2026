@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,12 +32,12 @@ INSERT INTO accounts (
     %(balance)s, %(currency)s, NOW()
 )
 ON CONFLICT (account_id) DO UPDATE SET
-    customer_id = EXCLUDED.customer_id,
     name = EXCLUDED.name,
     account_type = EXCLUDED.account_type,
     balance = EXCLUDED.balance,
     currency = EXCLUDED.currency,
     updated_at = NOW()
+WHERE accounts.customer_id = EXCLUDED.customer_id
 """
 
 _UPSERT_TRANSACTION = """
@@ -58,20 +59,28 @@ ON CONFLICT (transaction_id, posted_at) DO UPDATE SET
     category = EXCLUDED.category,
     counterparty_account_id = EXCLUDED.counterparty_account_id,
     ingested_at = NOW()
+WHERE transactions.customer_id = EXCLUDED.customer_id
 """
 
 _SPENDING_BY_CATEGORY = """
 SELECT
-    category,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    t.category,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
-GROUP BY category
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
+GROUP BY t.category
 ORDER BY total_spent DESC
 """
 
@@ -79,11 +88,27 @@ _CASHFLOW_WINDOW = """
 SELECT
     COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'posted' THEN amount ELSE 0 END), 0)
         AS income_posted,
-    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'posted' THEN ABS(amount) ELSE 0 END), 0)
+    COALESCE(SUM(CASE
+        WHEN kind = 'expense' AND status = 'posted'
+         AND NOT EXISTS (
+             SELECT 1 FROM accounts AS a
+             WHERE a.account_id = transactions.account_id
+               AND a.customer_id = transactions.customer_id
+               AND position('credit' in lower(a.account_type)) > 0
+         )
+        THEN ABS(amount) ELSE 0 END), 0)
         AS expenses_posted,
     COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'pending' THEN amount ELSE 0 END), 0)
         AS pending_income,
-    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'pending' THEN ABS(amount) ELSE 0 END), 0)
+    COALESCE(SUM(CASE
+        WHEN kind = 'expense' AND status = 'pending'
+         AND NOT EXISTS (
+             SELECT 1 FROM accounts AS a
+             WHERE a.account_id = transactions.account_id
+               AND a.customer_id = transactions.customer_id
+               AND position('credit' in lower(a.account_type)) > 0
+         )
+        THEN ABS(amount) ELSE 0 END), 0)
         AS pending_expenses,
     COALESCE(SUM(CASE WHEN kind = 'transfer' THEN ABS(amount) ELSE 0 END), 0)
         AS transfer_abs_sum,
@@ -96,15 +121,22 @@ WHERE customer_id = %(customer_id)s
 
 _DAILY_SPENDING_SQL = """
 SELECT
-    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    date_trunc('day', t.posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
 GROUP BY 1
 ORDER BY 1
 """
@@ -154,16 +186,29 @@ WITH NO DATA
 
 _DISCRETIONARY_DAILY_SQL = """
 SELECT
-    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    date_trunc('day', t.posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
-  AND NOT (category = ANY(%(exclude_categories)s))
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND NOT (lower(t.category) = ANY(%(exclude_categories)s))
+  AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(%(exclude_description_tokens)s::text[]) AS token(value)
+        WHERE token.value <> ''
+          AND position(token.value in lower(COALESCE(t.description, ''))) > 0
+      )
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
 GROUP BY 1
 ORDER BY 1
 """
@@ -340,13 +385,18 @@ class TigerRepository:
         accounts: list[Account],
         transactions: list[Transaction],
         reconcile: bool,
+        transactions_complete: bool = False,
     ) -> CustomerSyncWriteResult:
         """Atomically upsert the Nessie snapshot and optionally prune orphans.
 
         Orphan deletes are scoped to ``customer_id`` only and run only when
-        ``reconcile`` is True (caller must certify the Nessie fetch was complete).
+        ``reconcile`` is True (caller must certify the Nessie account fetch was
+        complete) and ``transactions_complete`` is True. The default is False:
+        a caller that forgets the flag must not snapshot-delete. An incomplete
+        feed deletes nothing, including when the kept account set is empty.
         """
         keep_ids = {account.account_id for account in accounts}
+        transactions = _dedupe_transactions(transactions)
         with self._conn.transaction():
             with self._conn.cursor() as cur:
                 self._upsert_accounts_cursor(cur, accounts)
@@ -356,7 +406,11 @@ class TigerRepository:
                 if reconcile:
                     transactions_deleted, accounts_deleted = (
                         self._delete_stale_for_customer_cursor(
-                            cur, customer_id=customer_id, keep_account_ids=keep_ids
+                            cur,
+                            customer_id=customer_id,
+                            keep_account_ids=keep_ids,
+                            transactions=transactions,
+                            transactions_complete=transactions_complete,
                         )
                     )
         return CustomerSyncWriteResult(
@@ -417,19 +471,49 @@ class TigerRepository:
         *,
         customer_id: str,
         keep_account_ids: set[str],
+        transactions: list[Transaction] | None = None,
+        transactions_complete: bool = False,
     ) -> tuple[int, int]:
-        """Delete stale transactions then accounts for one customer only."""
+        """Delete stale transactions then accounts for one customer only.
+
+        When the transaction feed is complete, any row whose
+        ``(transaction_id, posted_at)`` is absent from the snapshot is removed,
+        including duplicates left by an unstable ``posted_at``. A partial feed
+        deletes nothing: an empty keep-set must not wipe the customer, and a
+        non-empty keep-set must not drop accounts whose transactions were not
+        fully fetched.
+        """
+        if not transactions_complete:
+            return 0, 0
         keep = list(keep_account_ids)
-        if keep:
+        snapshot = list(transactions or [])
+        if snapshot:
             cur.execute(
                 """
-                DELETE FROM transactions
-                WHERE customer_id = %s
-                  AND account_id <> ALL(%s)
+                DELETE FROM transactions AS t
+                WHERE t.customer_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM unnest(%s::text[], %s::timestamptz[])
+                          AS kept(transaction_id, posted_at)
+                      WHERE kept.transaction_id = t.transaction_id
+                            AND kept.posted_at = t.posted_at
+                  )
                 """,
-                (customer_id, keep),
+                (
+                    customer_id,
+                    [txn.transaction_id for txn in snapshot],
+                    [txn.posted_at for txn in snapshot],
+                ),
             )
-            transactions_deleted = cur.rowcount or 0
+        else:
+            cur.execute(
+                "DELETE FROM transactions WHERE customer_id = %s",
+                (customer_id,),
+            )
+        transactions_deleted = cur.rowcount or 0
+
+        if keep:
             cur.execute(
                 """
                 DELETE FROM accounts
@@ -440,12 +524,6 @@ class TigerRepository:
             )
             accounts_deleted = cur.rowcount or 0
         else:
-            # Complete empty snapshot: remove this customer's rows only.
-            cur.execute(
-                "DELETE FROM transactions WHERE customer_id = %s",
-                (customer_id,),
-            )
-            transactions_deleted = cur.rowcount or 0
             cur.execute(
                 "DELETE FROM accounts WHERE customer_id = %s",
                 (customer_id,),
@@ -687,18 +765,27 @@ class TigerRepository:
         start_at: datetime,
         end_at: datetime,
         exclude_categories: list[str] | None = None,
+        exclude_description_tokens: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Posted expense totals by day, excluding bill-like categories.
 
         Uses indexed SQL (not cagg) so category filters stay accurate for the
         PredictiveEngine weekday model without an extra full-table scan in Python
-        when the caller prefers TigerData.
+        when the caller prefers TigerData. Category and bill-name checks are
+        case-insensitive, matching the in-memory discretionary filter.
         """
         params = {
             "customer_id": customer_id,
             "start_at": start_at,
             "end_at": end_at,
-            "exclude_categories": list(exclude_categories or []),
+            "exclude_categories": [
+                category.casefold() for category in (exclude_categories or []) if category
+            ],
+            "exclude_description_tokens": [
+                token.strip().lower()
+                for token in (exclude_description_tokens or [])
+                if token and token.strip()
+            ],
         }
         with self._conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_DISCRETIONARY_DAILY_SQL, params)
@@ -797,17 +884,60 @@ class TigerRepository:
         self._conn.commit()
 
 
+def _dedupe_transactions(transactions: list[Transaction]) -> list[Transaction]:
+    """Collapse duplicate Nessie ids. Last row wins so re-sync stays one PK."""
+    by_id: dict[str, Transaction] = {}
+    for txn in transactions:
+        by_id[txn.transaction_id] = txn
+    return list(by_id.values())
+
+
+_DOLLAR_TAG = re.compile(r"\$[A-Za-z0-9_]*\$")
+
+
+def _clean_statement(raw: str) -> str:
+    lines = [
+        line
+        for line in raw.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    return "\n".join(lines).strip()
+
+
 def _split_sql(sql: str) -> list[str]:
+    """Split SQL on semicolons, keeping dollar-quoted function bodies intact."""
     parts: list[str] = []
-    buffer: list[str] = []
-    for line in sql.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
+    start = 0
+    index = 0
+    tag: str | None = None
+    length = len(sql)
+    while index < length:
+        if tag is None and sql.startswith("--", index):
+            newline = sql.find("\n", index)
+            index = length if newline < 0 else newline + 1
             continue
-        buffer.append(line)
-        if stripped.endswith(";"):
-            parts.append("\n".join(buffer).strip().rstrip(";"))
-            buffer = []
-    if buffer:
-        parts.append("\n".join(buffer).strip().rstrip(";"))
-    return [p for p in parts if p]
+        if tag is None and sql[index] == "$":
+            match = _DOLLAR_TAG.match(sql, index)
+            if match:
+                tag = match.group(0)
+                index = match.end()
+                continue
+        if tag is not None:
+            if sql.startswith(tag, index):
+                index += len(tag)
+                tag = None
+            else:
+                index += 1
+            continue
+        if sql[index] == ";":
+            statement = _clean_statement(sql[start:index])
+            if statement:
+                parts.append(statement)
+            index += 1
+            start = index
+            continue
+        index += 1
+    tail = _clean_statement(sql[start:])
+    if tail:
+        parts.append(tail)
+    return parts

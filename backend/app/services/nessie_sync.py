@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.config import Settings
 from app.db.repository import TigerRepository
-from app.services.nessie_client import AccountCollection, NessieClient
+from app.services.nessie_client import AccountCollection, NessieClient, TransactionFeed
 from app.services.nessie_mapper import (
     collect_account_transactions,
     collect_from_transaction_feed,
@@ -68,19 +68,28 @@ class NessieSyncService:
         ]
 
         all_txns = []
-        for account in accounts:
-            all_txns.extend(
-                self._transactions_for_account(
+        if not accounts:
+            # An empty body is not "this customer has zero accounts". Only an
+            # explicit total of 0 may snapshot-delete the stored customer.
+            feeds_complete = (
+                collection.reported_total == 0 and collection.complete
+            )
+        else:
+            feeds_complete = True
+            for account in accounts:
+                account_txns, feed_complete = self._transactions_for_account(
                     app_customer_id=app_customer_id,
                     account_id=account.account_id,
                 )
-            )
+                all_txns.extend(account_txns)
+                feeds_complete = feeds_complete and feed_complete
 
         write = self._repo.commit_customer_sync(
             customer_id=app_customer_id,
             accounts=accounts,
             transactions=all_txns,
             reconcile=collection.complete,
+            transactions_complete=feeds_complete,
         )
         return SyncResult(
             accounts_upserted=write.accounts_upserted,
@@ -104,25 +113,49 @@ class NessieSyncService:
         *,
         app_customer_id: str,
         account_id: str,
-    ):
+    ) -> tuple[list, bool]:
         # Prefer v2 combined feed — classic /purchases etc. are POST-only (405) on v2.
-        feed = self._nessie.list_account_transactions(account_id)
-        if feed:
-            return collect_from_transaction_feed(
-                app_customer_id=app_customer_id,
-                account_id=account_id,
-                feed=feed,
+        feed, complete = self._read_transaction_feed(account_id)
+        if feed or not complete:
+            mapped = (
+                collect_from_transaction_feed(
+                    app_customer_id=app_customer_id,
+                    account_id=account_id,
+                    feed=feed,
+                )
+                if feed
+                else []
             )
+            return mapped, complete
 
         purchases = self._nessie.list_purchases(account_id)
         deposits = self._nessie.list_deposits(account_id)
         withdrawals = self._nessie.list_withdrawals(account_id)
         transfers = self._nessie.list_transfers(account_id)
-        return collect_account_transactions(
-            app_customer_id=app_customer_id,
-            account_id=account_id,
-            purchases=purchases,
-            deposits=deposits,
-            withdrawals=withdrawals,
-            transfers=transfers,
+        # Classic /purchases|deposits|withdrawals|transfers GETs are POST-only
+        # on v2 (405 → []). That empty fallback is not a complete snapshot.
+        return (
+            collect_account_transactions(
+                app_customer_id=app_customer_id,
+                account_id=account_id,
+                purchases=purchases,
+                deposits=deposits,
+                withdrawals=withdrawals,
+                transfers=transfers,
+            ),
+            False,
         )
+
+    def _read_transaction_feed(self, account_id: str) -> tuple[list[dict], bool]:
+        """Read the v2 feed. Bare lists (test doubles) are treated as complete."""
+        fetcher = getattr(self._nessie, "fetch_account_transactions", None)
+        if fetcher is not None:
+            fetched = fetcher(account_id)
+            if isinstance(fetched, TransactionFeed):
+                return list(fetched.items), fetched.complete
+            if isinstance(fetched, list):
+                return fetched, True
+        listed = self._nessie.list_account_transactions(account_id)
+        if isinstance(listed, list):
+            return listed, True
+        return [], False

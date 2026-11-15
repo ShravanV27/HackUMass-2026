@@ -35,6 +35,29 @@ def test_isolated_db_skips_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
         require_isolated_database_url()
 
 
+def test_live_cleanup_deletes_only_the_test_customer() -> None:
+    from unittest.mock import MagicMock
+
+    from tests.live.conftest import _delete_customer_rows
+    from tests.live.helpers import LIVE_TEST_CUSTOMER_ID
+
+    refused = MagicMock()
+    with pytest.raises(RuntimeError, match=LIVE_TEST_CUSTOMER_ID):
+        _delete_customer_rows(refused, "demo-customer-001")
+    refused.cursor.assert_not_called()
+
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    _delete_customer_rows(conn, LIVE_TEST_CUSTOMER_ID)
+    statements = [call.args for call in cursor.execute.call_args_list]
+    assert statements == [
+        ("DELETE FROM transactions WHERE customer_id = %s", (LIVE_TEST_CUSTOMER_ID,)),
+        ("DELETE FROM accounts WHERE customer_id = %s", (LIVE_TEST_CUSTOMER_ID,)),
+    ]
+    assert "TRUNCATE" not in str(statements).upper()
+    conn.commit.assert_called_once()
+
+
 def test_isolated_db_fails_when_same_as_shared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

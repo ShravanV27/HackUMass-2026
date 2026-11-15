@@ -46,3 +46,25 @@ SELECT create_hypertable(
     if_not_exists => TRUE,
     migrate_data => TRUE
 );
+
+-- account_id is the primary key, so a second customer cannot insert another
+-- row. This trigger rejects UPDATEs that would move the existing row.
+CREATE OR REPLACE FUNCTION accounts_reject_customer_reassign()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $accounts_owner$
+BEGIN
+    IF NEW.customer_id IS DISTINCT FROM OLD.customer_id THEN
+        RAISE EXCEPTION 'account_id % is owned by customer %', OLD.account_id, OLD.customer_id
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$accounts_owner$;
+
+DROP TRIGGER IF EXISTS accounts_customer_owner ON accounts;
+
+CREATE TRIGGER accounts_customer_owner
+    BEFORE UPDATE OF customer_id ON accounts
+    FOR EACH ROW
+    EXECUTE FUNCTION accounts_reject_customer_reassign();

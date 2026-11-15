@@ -16,6 +16,10 @@ from app.models.schemas import (
 
 _CENT = Decimal("0.01")
 _HUNDRED = Decimal("100")
+# Stable sentinel for Nessie rows with no parseable timestamp. ``datetime.now()``
+# made the TigerData PK ``(transaction_id, posted_at)`` change on every sync and
+# pulled undated activity into the current lookback window.
+UNDATED_POSTED_AT = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def map_account(raw: dict[str, Any], *, app_customer_id: str) -> Account:
@@ -420,10 +424,11 @@ def _status(value: Any) -> TransactionStatus:
 def _transaction_posted_at(raw: dict[str, Any]) -> datetime:
     """Stable event time for TigerData PK ``(transaction_id, posted_at)``.
 
-    Nessie v2 ``TransactionDTO`` exposes ``created_at`` / ``settle_at`` /
-    ``updated_at``. Classic payloads may use purchase/transaction dates.
-    Prefer those over ``datetime.now()`` so re-sync upserts instead of inserting
-    duplicate rows with a new timestamp.
+    Nessie v2 ``TransactionDTO`` exposes ``created_at`` / ``settle_at``.
+    ``updated_at`` is not an event time — a later edit would move the
+    TigerData key — so it is ignored. Classic payloads may use
+    purchase/transaction dates. Missing dates use a stable sentinel rather
+    than ``datetime.now()``.
     """
     for key in (
         "purchase_date",
@@ -432,17 +437,16 @@ def _transaction_posted_at(raw: dict[str, Any]) -> datetime:
         "posted_at",
         "created_at",
         "settle_at",
-        "updated_at",
     ):
         value = raw.get(key)
         if value not in (None, ""):
             return _parse_dt(value)
-    return _parse_dt(None)
+    return UNDATED_POSTED_AT
 
 
 def _parse_dt(value: Any) -> datetime:
     if value is None or value == "":
-        return datetime.now(tz=timezone.utc)
+        return UNDATED_POSTED_AT
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     text = str(value).strip()
@@ -454,5 +458,5 @@ def _parse_dt(value: Any) -> datetime:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        return datetime.now(tz=timezone.utc)
+        return UNDATED_POSTED_AT
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)

@@ -140,7 +140,9 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
                         "balance": 100,
                         "customer_id": "nessie-cust-1",
                     }
-                ]
+                ],
+                "has_more": False,
+                "total": 1,
             }
         elif url.endswith(
             "/accounts/acct_01m7djs39b2adt8vfg8ztzpw0f/transactions"
@@ -163,7 +165,9 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
                         "description": "Pay",
                         "transaction_date": "2026-11-02",
                     },
-                ]
+                ],
+                "has_more": False,
+                "total": 2,
             }
         else:
             payload = {"items": []}
@@ -232,6 +236,26 @@ def test_list_account_transactions_uses_v2_path(settings: Settings) -> None:
     )
     # OpenAPI default limit is 100; request max so history is not truncated.
     assert session.get.call_args.kwargs["params"]["limit"] == 5000
+
+
+def test_fetch_account_transactions_marks_truncated_page_incomplete(
+    settings: Settings,
+) -> None:
+    session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b"{}"
+    response.json.return_value = {
+        "items": [{"id": "txn_1", "type": "deposit", "amount": 5}],
+        "has_more": True,
+    }
+    session.get.return_value = response
+
+    client = NessieClient(settings, session=session)
+    feed = client.fetch_account_transactions("acct_01abc")
+    assert feed.complete is False
+    assert feed.items[0]["id"] == "txn_1"
+    assert client.list_account_transactions("acct_01abc")[0]["id"] == "txn_1"
 
 
 def test_list_bills_for_customer_unwraps_items(settings: Settings) -> None:

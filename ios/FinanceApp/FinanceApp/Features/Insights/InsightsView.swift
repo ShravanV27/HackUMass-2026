@@ -104,8 +104,18 @@ struct InsightsView: View {
             if let behavior = bundle.behavior {
                 Text(BehaviorLabel.display(behavior.segment))
                     .font(.title3.weight(.semibold))
+                if let reason = behaviorReason(behavior.evidence) {
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 ForEach(behavior.tips.prefix(3), id: \.self) { tip in
                     Label(tip, systemImage: "lightbulb")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let plan = behavior.loanPaymentSuggestions.first, !plan.isEmpty {
+                    Text(plan)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -270,6 +280,18 @@ struct InsightsView: View {
         case "watch": return .orange
         default: return .blue
         }
+    }
+
+    private func behaviorReason(_ evidence: BehaviorEvidence?) -> String? {
+        guard let evidence else { return nil }
+        let weekend = evidence.weekendSpendShare.formatted(.number.precision(.fractionLength(0...1)))
+        let bills = evidence.billToCashRatio.formatted(.number.precision(.fractionLength(0...1)))
+        let drift = evidence.driftPct.formatted(.number.precision(.fractionLength(0...1)))
+        var line = "Why: weekends are \(weekend)% of spend, bills are \(bills)% of cash, drift \(drift)%."
+        if let lead = evidence.topCategories.first, !lead.isEmpty {
+            line += " \(lead) leads."
+        }
+        return line
     }
 
     private func driftDirectionLabel(_ direction: String) -> String {

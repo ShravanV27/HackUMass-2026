@@ -7,10 +7,11 @@ alerts later but must never invent or alter the numeric evidence.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Literal
 
+from app.domain.calculations import counted_posted_spending
 from app.domain.predictive_engine import (
     compute_overdraft_risk,
     roll_bill_occurrences,
@@ -21,8 +22,6 @@ from app.models.schemas import (
     AlertItem,
     ScheduledBill,
     Transaction,
-    TransactionKind,
-    TransactionStatus,
 )
 
 ZERO = Decimal("0.00")
@@ -37,14 +36,6 @@ BILL_CLUSTER_WINDOW_DAYS = 7
 
 def _money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
-
-
-def _as_utc_date(value: datetime | date) -> date:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.date()
-        return value.astimezone(timezone.utc).date()
-    return value
 
 
 def evaluate_alerts(
@@ -106,6 +97,7 @@ def evaluate_alerts(
     drift = compute_spending_drift(
         customer_id=customer_id,
         transactions=transactions,
+        accounts=accounts,
         as_of=as_of,
         recent_days=recent_days,
         baseline_days=baseline_days,
@@ -139,12 +131,14 @@ def evaluate_alerts(
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days),
         end=as_of,
+        accounts=accounts,
     )
     baseline_cats = category_totals_baseline or category_spend_totals(
         transactions,
         customer_id=customer_id,
         start=as_of - timedelta(days=recent_days + baseline_days),
         end=as_of - timedelta(days=recent_days),
+        accounts=accounts,
     )
     for category, recent_total in sorted(
         recent_cats.items(), key=lambda item: item[1], reverse=True
@@ -200,9 +194,10 @@ def evaluate_alerts(
 def metric_glossary() -> dict[str, str]:
     return {
         "safe_to_spend": (
-            "Cash available after pending items, known bills in the horizon, "
+            "Cash available after pending cash items, known bills in the horizon, "
             "estimated discretionary spend, and your minimum buffer. "
             "Never reported below $0. Credit-card balances are excluded. "
+            "A pending card purchase is not cash until the card is paid. "
             "Future income is only included when a payday is configured."
         ),
         "overdraft_risk": (
@@ -211,8 +206,9 @@ def metric_glossary() -> dict[str, str]:
             "Suggested daily cutback is the discretionary reduction that restores the buffer."
         ),
         "spending_drift": (
-            "Recent posted expense total vs a length-normalized baseline window. "
-            "Transfers and pending items are excluded."
+            "Recent posted spending vs a length-normalized baseline window. "
+            "Transfers and pending items are excluded. A credit-card purchase "
+            "and the later card payment count once."
         ),
         "estimated_spend": (
             "Weekday-aware average of historical discretionary expenses, "
@@ -231,18 +227,17 @@ def category_spend_totals(
     customer_id: str,
     start: date,
     end: date,
+    accounts: list[Account] | None = None,
 ) -> dict[str, Decimal]:
     totals: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if start < day <= end:
-            totals[txn.category] += abs(txn.amount)
+    for txn, amount in counted_posted_spending(
+        customer_id,
+        list(transactions),
+        accounts,
+        start=start,
+        end=end,
+    ):
+        totals[txn.category] += amount
     return {k: _money(v) for k, v in totals.items()}
 
 

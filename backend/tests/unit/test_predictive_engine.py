@@ -13,6 +13,8 @@ from app.domain.predictive_engine import (
     resolve_horizon_days,
     roll_bill_occurrences,
     simulate_scenarios,
+    simulate_what_if_with_engine,
+    sql_bounds_for_half_open_days,
     suggested_daily_cutback,
     weekday_spend_rates,
     DailySpendObservation,
@@ -247,3 +249,117 @@ def test_behavior_bill_stressed() -> None:
     assert behavior.segment == "bill_stressed"
     assert behavior.tips
     assert behavior.loan_payment_suggestions
+
+
+def test_sql_bounds_exclude_the_lookback_start_day() -> None:
+    start, end = sql_bounds_for_half_open_days(
+        start_exclusive=date(2026, 11, 7),
+        end_inclusive=date(2026, 11, 14),
+    )
+    assert start == datetime(2026, 11, 8, tzinfo=timezone.utc)
+    assert end == datetime(2026, 11, 15, tzinfo=timezone.utc)
+
+
+def test_stale_weekly_bill_does_not_emit_past_dates() -> None:
+    bills = [
+        ScheduledBill(
+            bill_id="gym",
+            customer_id="c1",
+            account_id="a1",
+            name="Gym",
+            amount=Decimal("15.00"),
+            category="Health",
+            next_due_date=date(2024, 1, 1),
+            cadence="weekly",
+        )
+    ]
+    as_of = date(2026, 11, 14)
+    rolled = roll_bill_occurrences(
+        bills, customer_id="c1", as_of=as_of, horizon_days=14
+    )
+    assert rolled
+    assert all(as_of < bill.next_due_date <= date(2026, 11, 28) for bill in rolled)
+
+
+def test_cut_and_pause_raise_scenario_safe_to_spend() -> None:
+    result = simulate_scenarios(
+        customer_id="c1",
+        accounts=[_account("2000.00")],
+        transactions=[_expense(1, "300.00", "Food"), _expense(8, "300.00", "Food")],
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        request=ScenarioRequest(
+            horizon_days=14,
+            lookback_days=30,
+            minimum_buffer=Decimal("50.00"),
+            scenarios=[
+                ScenarioSpec(name="baseline"),
+                ScenarioSpec(name="cut_discretionary_20"),
+                ScenarioSpec(name="pause_category", category="Food"),
+            ],
+        ),
+    )
+    by_name = {s.name: s for s in result.scenarios}
+    assert by_name["cut_discretionary_20"].estimated_spend_total < (
+        by_name["baseline"].estimated_spend_total
+    )
+    assert (
+        by_name["cut_discretionary_20"].safe_to_spend
+        > by_name["baseline"].safe_to_spend
+    )
+    assert by_name["pause_category"].estimated_spend_total == Decimal("0.00")
+    assert by_name["pause_category"].safe_to_spend > by_name["baseline"].safe_to_spend
+
+
+def test_scenario_delta_uses_baseline_even_when_it_is_not_first() -> None:
+    result = simulate_scenarios(
+        customer_id="c1",
+        accounts=[_account("1000.00")],
+        transactions=[],
+        scheduled_bills=[],
+        as_of=date(2026, 11, 14),
+        request=ScenarioRequest(
+            horizon_days=7,
+            lookback_days=30,
+            minimum_buffer=Decimal("0.00"),
+            scenarios=[
+                ScenarioSpec(name="one_time_purchase", amount=Decimal("100.00")),
+                ScenarioSpec(name="baseline"),
+            ],
+        ),
+    )
+    by_name = {s.name: s for s in result.scenarios}
+    assert by_name["baseline"].delta_min_balance_vs_baseline == Decimal("0.00")
+    assert by_name["one_time_purchase"].delta_min_balance_vs_baseline == Decimal(
+        "-100.00"
+    )
+
+
+def test_what_if_shortfall_is_not_measured_from_floored_zero() -> None:
+    result = simulate_what_if_with_engine(
+        customer_id="c1",
+        accounts=[_account("100.00")],
+        transactions=[],
+        scheduled_bills=[
+            ScheduledBill(
+                bill_id="rent",
+                customer_id="c1",
+                account_id="a1",
+                name="Rent",
+                amount=Decimal("900.00"),
+                category="Housing",
+                next_due_date=date(2026, 11, 20),
+                cadence="one_time",
+            )
+        ],
+        purchase_amount=Decimal("50.00"),
+        description="Shoes",
+        as_of=date(2026, 11, 14),
+        horizon_days=14,
+        lookback_days=30,
+        minimum_buffer=Decimal("250.00"),
+    )
+    # 100 cash - 900 bill - 250 buffer = -1050, then -50 purchase.
+    assert result.safe_to_spend_before == Decimal("0.00")
+    assert result.safe_to_spend_after == Decimal("-1100.00")
+    assert result.affordable is False

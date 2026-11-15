@@ -37,8 +37,9 @@ def money_flow(
     customer_id: str = Depends(verify_customer),
     provider: DataProvider = Depends(get_data_provider),
 ) -> MoneyFlowSummary:
+    accounts = provider.list_accounts(customer_id)
     txns = provider.list_transactions(customer_id)
-    return summarize_money_flow(customer_id, txns)
+    return summarize_money_flow(customer_id, txns, accounts)
 
 
 @router.get(
@@ -53,7 +54,7 @@ def forecast(
 ) -> ForecastSummary:
     accounts = provider.list_accounts(customer_id)
     txns = provider.list_transactions(customer_id)
-    flow = summarize_money_flow(customer_id, txns)
+    flow = summarize_money_flow(customer_id, txns, accounts)
     starting = total_available_balance(accounts)
     return build_linear_forecast(
         customer_id,
@@ -78,7 +79,7 @@ def dashboard(
 ) -> DashboardResponse:
     accounts = provider.list_accounts(customer_id)
     txns = provider.list_transactions(customer_id)
-    flow = summarize_money_flow(customer_id, txns)
+    flow = summarize_money_flow(customer_id, txns, accounts)
     starting = total_available_balance(accounts)
     forecast_summary = build_linear_forecast(
         customer_id,

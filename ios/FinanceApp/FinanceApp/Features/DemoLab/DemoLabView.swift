@@ -82,8 +82,7 @@ struct DemoLabView: View {
                 }
                 .pickerStyle(.segmented)
 
-                TextField("Amount", text: $amountText)
-                    .keyboardType(.decimalPad)
+                DecimalAmountField(placeholder: "Amount", text: $amountText)
 
                 if action == .bill {
                     TextField("Payee", text: $payeeText)

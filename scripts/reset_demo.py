@@ -645,6 +645,7 @@ def verify_predictions(
     drift = compute_spending_drift(
         customer_id=customer_id,
         transactions=transactions,
+        accounts=accounts,
         as_of=date_cls.today(),
         recent_days=7,
         baseline_days=28,

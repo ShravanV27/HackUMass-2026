@@ -8,6 +8,7 @@ from app.models.schemas import TransactionKind, TransactionStatus
 from datetime import date
 
 from app.services.nessie_mapper import (
+    UNDATED_POSTED_AT,
     collect_account_transactions,
     collect_from_transaction_feed,
     collect_scheduled_bills,
@@ -277,6 +278,52 @@ def test_v2_created_at_is_stable_across_repeated_mapping() -> None:
     assert first.transaction_id == second.transaction_id == "purchase:txn_01m7stable"
     assert first.posted_at == second.posted_at
     assert first.posted_at.isoformat().startswith("2026-10-01T12:34:56")
+
+
+def test_missing_or_invalid_transaction_date_is_stable_sentinel() -> None:
+    """Undated rows must not use datetime.now() or they duplicate on every sync."""
+    missing = {
+        "id": "txn_nodate",
+        "type": "purchase",
+        "amount": 10,
+        "status": "completed",
+        "description": "Coffee",
+    }
+    invalid = {
+        "id": "txn_baddate",
+        "type": "purchase",
+        "amount": 4,
+        "status": "completed",
+        "transaction_date": "not-a-date",
+    }
+    first = map_feed_transaction(
+        missing, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    second = map_feed_transaction(
+        missing, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    bad = map_feed_transaction(
+        invalid, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    assert first.posted_at == second.posted_at == UNDATED_POSTED_AT
+    assert bad.posted_at == UNDATED_POSTED_AT
+    assert first.posted_at.year == 1970
+
+
+def test_updated_at_is_not_used_as_event_time() -> None:
+    """updated_at changes when Nessie edits a row and must not move the PK."""
+    raw = {
+        "id": "txn_touch",
+        "type": "purchase",
+        "amount": 8,
+        "status": "completed",
+        "description": "Coffee",
+        "updated_at": "2026-11-14T18:00:00Z",
+    }
+    mapped = map_feed_transaction(
+        raw, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    assert mapped.posted_at == UNDATED_POSTED_AT
 
 
 def test_sync_upsert_key_stable_when_mapping_twice() -> None:

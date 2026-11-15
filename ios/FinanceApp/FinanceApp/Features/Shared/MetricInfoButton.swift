@@ -36,11 +36,11 @@ struct MetricInfoButton: View {
 
 enum MetricGlossary {
     static let safeToSpend =
-        "Cash you can spend after pending items, known bills, typical daily spending, and your safety buffer. Never shown below $0. Credit cards are excluded. Future paychecks only count when you set a payment cycle in Settings."
+        "Cash you can spend after pending cash items, known bills, typical daily spending, and your safety buffer. Never shown below $0. Credit-card balances and pending card swipes are not cash until the card is paid. Future paychecks only count when you set a payment cycle in Settings."
     static let overdraftRisk =
         "On track = stays above your buffer. Watch closely = dips below the buffer. At risk = may go below zero. Suggested cutbacks come from the forecast engine, not AI."
     static let spendingDrift =
-        "Compares recent spending to your usual pace over a longer window. Transfers and pending items are excluded."
+        "Compares recent spending to your usual pace over a longer window. Transfers and pending items are excluded. A card purchase and the later payment count once."
     static let estimatedSpend =
         "Typical discretionary spending by weekday, based on your history — not counting categories already covered by known bills."
     static let aiInsight =

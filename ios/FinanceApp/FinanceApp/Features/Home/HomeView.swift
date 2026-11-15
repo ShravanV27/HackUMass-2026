@@ -87,6 +87,11 @@ struct HomeView: View {
                     }
                     Text(max(bundle.safe.safeToSpend, Decimal(0)), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    if bundle.safe.safeToSpend < 0 {
+                        Text("Already short \(abs(bundle.safe.safeToSpend).formatted(.currency(code: "USD"))) after bills, buffer, and typical spend.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
@@ -105,17 +110,27 @@ struct HomeView: View {
             }
 
             if let days = bundle.overdraft.daysUntilZero {
-                Text("Projected to run out of cash in \(days) days without changes.")
+                Text(days <= 0
+                     ? "Cash is already at or below zero."
+                     : "Projected to run out of cash in \(days) \(days == 1 ? "day" : "days") without changes.")
                     .font(.footnote)
                     .foregroundStyle(.red)
             } else if let days = bundle.overdraft.daysUntilBelowBuffer {
-                Text("May dip below your safety buffer in about \(days) days.")
+                Text(days <= 0
+                     ? "Cash is already under your safety buffer."
+                     : "May dip below your safety buffer in about \(days) \(days == 1 ? "day" : "days").")
                     .font(.footnote)
                     .foregroundStyle(.orange)
             } else {
                 Text("On track to stay above your \(bundle.safe.minimumBuffer.formatted(.currency(code: "USD"))) buffer.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if bundle.overdraft.suggestedDailyCutback > 0 {
+                Text("About \(bundle.overdraft.suggestedDailyCutback.formatted(.currency(code: "USD"))) less discretionary spend per day would restore the buffer.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
             }
 
             Picker("Horizon", selection: Binding(
@@ -155,7 +170,17 @@ struct HomeView: View {
                  : "No future paycheck is assumed until you set a payment cycle.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ForEach(cashflow.assumptions.prefix(2), id: \.self) { note in
+            if cashflow.confidence.lowercased() == "low" {
+                Text("Risk flag: thin history, so this runway can move as new transactions post.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            if let trend = weekdaySpendLine(cashflow.weekdayRates) {
+                Text(trend)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(cashflow.assumptions.prefix(4), id: \.self) { note in
                 Text("• \(note)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -165,6 +190,22 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func weekdaySpendLine(_ rates: [String: Decimal]) -> String? {
+        let order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        let labels = [
+            "mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu",
+            "fri": "Fri", "sat": "Sat", "sun": "Sun",
+        ]
+        let ranked = order.compactMap { key -> (String, Decimal)? in
+            guard let value = rates[key] else { return nil }
+            return (labels[key] ?? key, value)
+        }.sorted { $0.1 > $1.1 }
+        guard let busiest = ranked.first, let quietest = ranked.last, busiest.1 > quietest.1 else {
+            return nil
+        }
+        return "Heavier typical cash spend on \(busiest.0) than \(quietest.0)."
     }
 
     private func confidenceLabel(_ raw: String) -> String {

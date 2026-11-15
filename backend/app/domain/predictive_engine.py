@@ -18,7 +18,11 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Literal
 
-from app.domain.calculations import spendable_cash_balance
+from app.domain.calculations import (
+    counted_posted_spending,
+    credit_account_ids,
+    spendable_cash_balance,
+)
 from app.models.schemas import (
     Account,
     BehaviorEvidence,
@@ -42,6 +46,8 @@ from app.models.schemas import (
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
+# Same instant as nessie_mapper.UNDATED_POSTED_AT. Undated rows are not history.
+_UNDATED_POSTED_AT = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 WEEKDAY_NAMES = (
     "mon",
@@ -66,6 +72,35 @@ def _as_utc_date(value: datetime | date) -> date:
             return value.date()
         return value.astimezone(timezone.utc).date()
     return value
+
+
+def _is_undated_posted_at(posted_at: datetime) -> bool:
+    moment = posted_at if posted_at.tzinfo else posted_at.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc) == _UNDATED_POSTED_AT
+
+
+def _card_purchases_in_lookback(
+    transactions: list[Transaction],
+    *,
+    customer_id: str,
+    card_ids: set[str],
+    as_of: date,
+    lookback_days: int,
+) -> bool:
+    if not card_ids:
+        return False
+    window_start = as_of - timedelta(days=lookback_days)
+    for txn in transactions:
+        if txn.customer_id != customer_id or txn.account_id not in card_ids:
+            continue
+        if txn.kind != TransactionKind.EXPENSE or txn.status != TransactionStatus.POSTED:
+            continue
+        if _is_undated_posted_at(txn.posted_at):
+            continue
+        day = _as_utc_date(txn.posted_at)
+        if window_start < day <= as_of and abs(txn.amount) > ZERO:
+            return True
+    return False
 
 
 def resolve_horizon_days(
@@ -105,6 +140,32 @@ def _count_weekdays(start: date, end: date) -> dict[int, int]:
     return counts
 
 
+def sql_bounds_for_half_open_days(
+    *,
+    start_exclusive: date,
+    end_inclusive: date,
+) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` matching in-memory ``start_exclusive < day <= end_inclusive``.
+
+    SQL predicates are ``posted_at >= start AND posted_at < end``. Using midnight
+    of ``start_exclusive`` would include that calendar day and shift category
+    windows and discretionary history by one day versus the Python engine.
+    """
+    if end_inclusive < start_exclusive:
+        raise ValueError("end_inclusive must be on or after start_exclusive")
+    start_at = datetime.combine(
+        start_exclusive + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    end_at = datetime.combine(
+        end_inclusive + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    return start_at, end_at
+
+
 def discretionary_daily_observations(
     transactions: list[Transaction],
     *,
@@ -113,12 +174,19 @@ def discretionary_daily_observations(
     lookback_days: int,
     exclude_categories: set[str],
     exclude_description_tokens: set[str] | None = None,
+    exclude_account_ids: set[str] | None = None,
 ) -> list[DailySpendObservation]:
-    """Posted discretionary spend per day in the lookback window."""
+    """Posted discretionary cash outflow per day in the lookback window.
+
+    ``exclude_account_ids`` drops credit-card purchases. Those swipes are not
+    cash leaving the bank; the later card payment on a cash account is.
+    """
     if lookback_days <= 0:
         raise ValueError("lookback_days must be positive")
     window_start = as_of - timedelta(days=lookback_days)
     tokens = {t.lower() for t in (exclude_description_tokens or set()) if t}
+    skipped_accounts = exclude_account_ids or set()
+    exclude_folded = {category.casefold() for category in exclude_categories if category}
     by_day: dict[date, Decimal] = {}
     for txn in transactions:
         if txn.customer_id != customer_id:
@@ -127,7 +195,9 @@ def discretionary_daily_observations(
             continue
         if txn.status != TransactionStatus.POSTED:
             continue
-        if txn.category in exclude_categories:
+        if txn.account_id in skipped_accounts:
+            continue
+        if txn.category.casefold() in exclude_folded:
             continue
         if tokens and any(token in txn.description.lower() for token in tokens):
             continue
@@ -245,12 +315,14 @@ def roll_bill_occurrences(
             continue
 
         current = first
-        # If stored next_due is stale relative to as_of, advance.
+        # If stored next_due is stale relative to as_of, advance. Weekly bills
+        # can be years behind, so the cap is longer than a few dozen steps.
+        # Never emit a date on or before as_of — those are not future obligations.
         guard = 0
-        while current <= as_of and guard < 36:
+        while current <= as_of and guard < 520:
             current = _advance_by_cadence(current, cadence)
             guard += 1
-        while current <= end and guard < 72:
+        while as_of < current <= end and guard < 1040:
             occurrences.append(
                 ScheduledBill(
                     bill_id=f"{bill.bill_id}@{current.isoformat()}",
@@ -345,12 +417,35 @@ def days_until_threshold(
     as_of: date,
     threshold: Decimal,
 ) -> int | None:
+    """Days until balance is at or below ``threshold``.
+
+    A balance that is already there on ``as_of`` is 0, not "tomorrow".
+    """
     for point in points:
-        if point.date <= as_of:
-            continue
         if point.projected_balance <= threshold:
+            if point.date <= as_of:
+                return 0
             return (point.date - as_of).days
     return None
+
+
+def purchase_applies_in_horizon(
+    amount: Decimal,
+    on_date: date | None,
+    *,
+    as_of: date,
+    horizon_days: int,
+) -> bool:
+    """True when a purchase changes this window's runway and safe-to-spend.
+
+    A missing date or a date on/before ``as_of`` is immediate. A later date
+    counts only through the horizon end. Anything after that is not applied.
+    """
+    if amount <= ZERO:
+        return False
+    if on_date is None or on_date <= as_of:
+        return True
+    return on_date <= as_of + timedelta(days=horizon_days)
 
 
 def suggested_daily_cutback(
@@ -433,8 +528,18 @@ def build_engine_forecast(
     if pause_categories:
         exclude = exclude | set(pause_categories)
     bill_names = {b.name for b in customer_bills}
+    card_ids = credit_account_ids(accounts, customer_id)
+    card_purchases_omitted = _card_purchases_in_lookback(
+        transactions,
+        customer_id=customer_id,
+        card_ids=card_ids,
+        as_of=as_of,
+        lookback_days=lookback_days,
+    )
 
-    observations = daily_spend_history
+    # Pre-aggregated history cannot drop one paused category. Recompute from
+    # the transactions so a pause still changes the forecast in live mode.
+    observations = None if pause_categories else daily_spend_history
     if observations is None:
         observations = discretionary_daily_observations(
             transactions,
@@ -443,6 +548,7 @@ def build_engine_forecast(
             lookback_days=lookback_days,
             exclude_categories=exclude,
             exclude_description_tokens=bill_names,
+            exclude_account_ids=card_ids,
         )
     rates, flat_daily = weekday_spend_rates(
         observations, as_of=as_of, lookback_days=lookback_days
@@ -587,6 +693,7 @@ def build_engine_forecast(
         purchase_day=purchase_day,
         purchase_skipped=purchase_skipped,
         bill_count=len(due),
+        card_purchases_omitted=card_purchases_omitted,
     )
     confidence = _forecast_confidence(
         observation_count=len(observations), lookback_days=lookback_days
@@ -628,6 +735,7 @@ def _forecast_assumptions(
     purchase_day: date | None,
     purchase_skipped: bool,
     bill_count: int,
+    card_purchases_omitted: bool = False,
 ) -> list[str]:
     notes = [
         (
@@ -668,6 +776,11 @@ def _forecast_assumptions(
         notes.append(
             "Purchase date is beyond the forecast horizon, so it was not applied."
         )
+    if card_purchases_omitted:
+        notes.append(
+            "Credit-card purchases are not immediate cash outflow. "
+            "That spending counts once; cash leaves when the card is paid."
+        )
     return notes
 
 
@@ -694,6 +807,9 @@ def compute_engine_safe_to_spend(
     payment_cycle: PaymentCycleConfig | None = None,
     daily_spend_history: list[DailySpendObservation] | None = None,
     spend_model: Literal["flat", "weekday"] = "weekday",
+    discretionary_multiplier: Decimal = Decimal("1.00"),
+    pause_categories: set[str] | None = None,
+    floor_at_zero: bool = True,
 ) -> SafeToSpendResponse:
     if minimum_buffer < 0:
         raise ValueError("minimum_buffer must be non-negative")
@@ -701,10 +817,15 @@ def compute_engine_safe_to_spend(
     available = spendable_cash_balance(accounts)
     pending_expenses = ZERO
     pending_income = ZERO
+    # A pending swipe or refund on a credit card has not moved cash. The
+    # checking payment is the cash event, same as posted card purchases.
+    card_ids = credit_account_ids(accounts, customer_id)
     for txn in transactions:
         if txn.customer_id != customer_id:
             continue
         if txn.status != TransactionStatus.PENDING:
+            continue
+        if txn.account_id in card_ids:
             continue
         if txn.kind == TransactionKind.EXPENSE:
             pending_expenses += abs(txn.amount)
@@ -723,13 +844,16 @@ def compute_engine_safe_to_spend(
         minimum_buffer=minimum_buffer,
         daily_spend_history=daily_spend_history,
         spend_model=spend_model,
+        discretionary_multiplier=discretionary_multiplier,
+        pause_categories=pause_categories,
     )
     # Known pending income may clear; configured paydays are already in the
     # forecast totals when income_assumed — do not double-count them here.
     # Safe-to-spend remains conservative: subtract bills + est spend + buffer,
     # add only *pending* income (not projected paydays). Floor at $0 so the
-    # customer hero never shows a negative "spendable" amount; What If? still
-    # reports signed shortfalls via safe_to_spend_after.
+    # customer hero never shows a negative "spendable" amount. Callers that
+    # report a signed shortfall (What If? / scenarios) pass floor_at_zero=False
+    # so a purchase is subtracted from the real remainder, not from $0.
     safe = _money(
         available
         + pending_income
@@ -738,7 +862,7 @@ def compute_engine_safe_to_spend(
         - forecast.estimated_spend_total
         - minimum_buffer
     )
-    if safe < ZERO:
+    if floor_at_zero and safe < ZERO:
         safe = ZERO
     return SafeToSpendResponse(
         customer_id=customer_id,
@@ -869,9 +993,8 @@ def simulate_scenarios(
     daily_spend_history: list[DailySpendObservation] | None = None,
 ) -> ScenarioSimulationResponse:
     series: list[ScenarioSeries] = []
-    baseline_min = ZERO
-    shared_assumptions: list[str] = []
-    for index, spec in enumerate(request.scenarios):
+    prepared: list[tuple[ScenarioSpec, CashflowForecastResponse, Decimal, Decimal]] = []
+    for spec in request.scenarios:
         multiplier = Decimal("1.00")
         pause: set[str] | None = None
         purchase = ZERO
@@ -906,6 +1029,9 @@ def simulate_scenarios(
             pause_categories=pause,
             extra_paycheck=extra,
         )
+        # Use the scenario's own estimated spend (cuts / pauses). Keep the
+        # signed value so a purchase is not subtracted from a floored $0.
+        # Projected paydays stay out of safe-to-spend (same conservative rule).
         safe = compute_engine_safe_to_spend(
             customer_id=customer_id,
             accounts=accounts,
@@ -917,13 +1043,47 @@ def simulate_scenarios(
             minimum_buffer=request.minimum_buffer,
             payment_cycle=payment_cycle,
             daily_spend_history=daily_spend_history,
+            discretionary_multiplier=multiplier,
+            pause_categories=pause,
+            floor_at_zero=False,
         )
-        # Recompute safe under purchase: subtract purchase from baseline safe.
-        safe_value = _money(safe.safe_to_spend - purchase)
-        if index == 0 or spec.name == "baseline":
-            baseline_min = forecast.min_balance
-            shared_assumptions = list(forecast.assumptions)
+        applied_purchase = (
+            purchase
+            if purchase_applies_in_horizon(
+                purchase,
+                purchase_on,
+                as_of=as_of,
+                horizon_days=request.horizon_days,
+            )
+            else ZERO
+        )
+        safe_value = _money(safe.safe_to_spend - applied_purchase)
+        prepared.append((spec, forecast, safe_value, applied_purchase))
+
+    baseline_forecast = next(
+        (forecast for spec, forecast, _safe, _applied in prepared if spec.name == "baseline"),
+        None,
+    )
+    if baseline_forecast is None and prepared:
+        baseline_forecast = prepared[0][1]
+    baseline_min = baseline_forecast.min_balance if baseline_forecast else ZERO
+    shared_assumptions = (
+        list(baseline_forecast.assumptions) if baseline_forecast else []
+    )
+    for spec, forecast, safe_value, applied_purchase in prepared:
         delta = _money(forecast.min_balance - baseline_min)
+        note = _scenario_note(spec)
+        if (
+            spec.name == "one_time_purchase"
+            and (spec.amount or ZERO) > ZERO
+            and applied_purchase == ZERO
+            and spec.on_date is not None
+        ):
+            note = (
+                f"A ${_money(spec.amount or ZERO)} purchase on "
+                f"{spec.on_date.isoformat()} is outside this horizon, so the "
+                "forecast and safe-to-spend are unchanged."
+            )
         series.append(
             ScenarioSeries(
                 name=spec.name,
@@ -937,7 +1097,7 @@ def simulate_scenarios(
                 safe_to_spend=safe_value,
                 delta_min_balance_vs_baseline=delta,
                 points=forecast.points,
-                note=_scenario_note(spec),
+                note=note,
                 assumptions=list(forecast.assumptions),
             )
         )
@@ -967,15 +1127,29 @@ def classify_behavior(
     payment_cycle: PaymentCycleConfig | None = None,
 ) -> BehaviorSegmentResponse:
     customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
-    exclude = {b.category for b in customer_bills} | {"Bills"}
-    observations = discretionary_daily_observations(
+    exclude = {b.category.casefold() for b in customer_bills if b.category} | {"bills"}
+    bill_tokens = {b.name.lower() for b in customer_bills if b.name}
+    window_start = as_of - timedelta(days=lookback_days)
+    by_day: dict[date, Decimal] = {}
+    # Spending, not cash timing: a card swipe counts on its day and the
+    # matching payment does not count again.
+    for txn, amount in counted_posted_spending(
+        customer_id,
         transactions,
-        customer_id=customer_id,
-        as_of=as_of,
-        lookback_days=lookback_days,
-        exclude_categories=exclude,
-        exclude_description_tokens={b.name for b in customer_bills},
-    )
+        accounts,
+        start=window_start,
+        end=as_of,
+    ):
+        if txn.category.casefold() in exclude:
+            continue
+        if bill_tokens and any(token in txn.description.lower() for token in bill_tokens):
+            continue
+        day = _as_utc_date(txn.posted_at)
+        by_day[day] = by_day.get(day, ZERO) + amount
+    observations = [
+        DailySpendObservation(day=day, total_spent=_money(total))
+        for day, total in sorted(by_day.items())
+    ]
     weekend = ZERO
     weekday = ZERO
     daily_totals = [obs.total_spent for obs in observations]
@@ -1007,6 +1181,7 @@ def classify_behavior(
 
     drift_pct = _drift_pct(
         transactions,
+        accounts=accounts,
         customer_id=customer_id,
         as_of=as_of,
         recent_days=recent_days,
@@ -1028,18 +1203,14 @@ def classify_behavior(
     )
 
     category_totals: dict[str, Decimal] = {}
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if as_of - timedelta(days=lookback_days) < day <= as_of:
-            category_totals[txn.category] = category_totals.get(
-                txn.category, ZERO
-            ) + abs(txn.amount)
+    for txn, amount in counted_posted_spending(
+        customer_id,
+        transactions,
+        accounts,
+        start=as_of - timedelta(days=lookback_days),
+        end=as_of,
+    ):
+        category_totals[txn.category] = category_totals.get(txn.category, ZERO) + amount
     top_categories = [
         name
         for name, _ in sorted(
@@ -1094,18 +1265,21 @@ def _posted_expense_total(
     *,
     start: date,
     end: date,
+    accounts: list[Account] | None = None,
 ) -> Decimal:
-    total = ZERO
-    for txn in transactions:
-        if txn.customer_id != customer_id:
-            continue
-        if txn.kind != TransactionKind.EXPENSE:
-            continue
-        if txn.status != TransactionStatus.POSTED:
-            continue
-        day = _as_utc_date(txn.posted_at)
-        if start < day <= end:
-            total += abs(txn.amount)
+    total = sum(
+        (
+            amount
+            for _txn, amount in counted_posted_spending(
+                customer_id,
+                transactions,
+                accounts,
+                start=start,
+                end=end,
+            )
+        ),
+        ZERO,
+    )
     return _money(total)
 
 
@@ -1116,15 +1290,20 @@ def _drift_pct(
     as_of: date,
     recent_days: int,
     baseline_days: int,
+    accounts: list[Account] | None = None,
 ) -> Decimal:
     recent_start = as_of - timedelta(days=recent_days)
     baseline_end = recent_start
     baseline_start = baseline_end - timedelta(days=baseline_days)
     recent = _posted_expense_total(
-        transactions, customer_id, start=recent_start, end=as_of
+        transactions, customer_id, start=recent_start, end=as_of, accounts=accounts
     )
     baseline_raw = _posted_expense_total(
-        transactions, customer_id, start=baseline_start, end=baseline_end
+        transactions,
+        customer_id,
+        start=baseline_start,
+        end=baseline_end,
+        accounts=accounts,
     )
     baseline_comparable = _money(
         (baseline_raw / Decimal(baseline_days)) * Decimal(recent_days)
@@ -1216,10 +1395,25 @@ def simulate_what_if_with_engine(
         lookback_days=lookback_days,
         minimum_buffer=minimum_buffer,
         payment_cycle=payment_cycle,
+        floor_at_zero=False,
     )
-    after_safe = _money(before.safe_to_spend - purchase_amount)
-    # Deferred purchases still reduce safe capacity once committed, but runway
-    # timing follows purchase_date in the forecast path.
+    # Hero "before" stays non-negative. The shortfall uses the unfloored
+    # remainder so an already-negative safe-to-spend is not collapsed to $0
+    # before the purchase is subtracted.
+    displayed_before = before.safe_to_spend if before.safe_to_spend >= ZERO else ZERO
+    applied = purchase_applies_in_horizon(
+        purchase_amount,
+        purchase_date,
+        as_of=as_of,
+        horizon_days=horizon_days,
+    )
+    # A date inside the horizon still reduces safe capacity. A date past the
+    # horizon is not applied, matching the forecast assumption.
+    after_safe = (
+        _money(before.safe_to_spend - purchase_amount)
+        if applied
+        else before.safe_to_spend
+    )
     affordable = after_safe >= ZERO
     forecast = build_engine_forecast(
         customer_id=customer_id,
@@ -1239,24 +1433,31 @@ def simulate_what_if_with_engine(
         if purchase_date is not None and purchase_date > as_of
         else " immediately"
     )
-    note = (
-        f"Affordable{when} within safe-to-spend after buffer, bills, and estimated spend."
-        if affordable
-        else f"Exceeds safe-to-spend{when}; would consume buffer or projected runway."
-    )
+    if not applied and purchase_date is not None:
+        note = (
+            f"Purchase date {purchase_date.isoformat()} is beyond the forecast "
+            "horizon, so it was not applied and safe-to-spend is unchanged."
+        )
+    else:
+        note = (
+            f"Affordable{when} within safe-to-spend after buffer, bills, and estimated spend."
+            if affordable
+            else f"Exceeds safe-to-spend{when}; would consume buffer or projected runway."
+        )
     if description:
         note = f"{note} ({description})"
     return WhatIfResponse(
         customer_id=customer_id,
         purchase_amount=_money(purchase_amount),
         description=description,
-        safe_to_spend_before=before.safe_to_spend,
+        safe_to_spend_before=displayed_before,
         safe_to_spend_after=after_safe,
         affordable=affordable,
         projected_min_balance_after=forecast.min_balance,
         note=note,
         purchase_date=purchase_date or as_of,
         assumptions=list(forecast.assumptions),
+        purchase_applied=applied,
     )
 
 
@@ -1302,7 +1503,24 @@ def backtest_spend_forecast(
             note="Not enough transaction history to backtest forecasts.",
         )
 
-    oldest = min(t.posted_at.date() for t in customer_txns)
+    dated_days = [
+        _as_utc_date(t.posted_at)
+        for t in customer_txns
+        if not _is_undated_posted_at(t.posted_at)
+    ]
+    if not dated_days:
+        return BacktestResponse(
+            customer_id=customer_id,
+            as_of=as_of,
+            windows_evaluated=0,
+            horizon_days=horizon_days,
+            sufficient_history=False,
+            assumptions=[
+                "Undated transactions are not treated as spending history.",
+            ],
+            note="Not enough transaction history to backtest forecasts.",
+        )
+    oldest = min(dated_days)
     if oldest > earliest_needed:
         return BacktestResponse(
             customer_id=customer_id,
@@ -1318,8 +1536,9 @@ def backtest_spend_forecast(
         )
 
     customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
-    exclude = {b.category for b in customer_bills} | {"Bills"}
+    exclude = {b.category.casefold() for b in customer_bills if b.category} | {"bills"}
     bill_names = {b.name for b in customer_bills}
+    card_ids = credit_account_ids(accounts, customer_id)
     results: list[BacktestWindowResult] = []
     abs_errors: list[Decimal] = []
     pct_errors: list[Decimal] = []
@@ -1339,10 +1558,12 @@ def backtest_spend_forecast(
         actual = ZERO
         end = window_as_of + timedelta(days=horizon_days)
         for txn in customer_txns:
-            day = txn.posted_at.date()
+            if txn.account_id in card_ids:
+                continue
+            day = _as_utc_date(txn.posted_at)
             if day <= window_as_of or day > end:
                 continue
-            if txn.category in exclude:
+            if txn.category.casefold() in exclude:
                 continue
             if any(token.lower() in txn.description.lower() for token in bill_names):
                 continue

@@ -78,6 +78,7 @@ struct WhatIfView: View {
             .padding()
             .opacity(viewModel.isRefreshing ? 0.72 : 1)
         }
+        .scrollDismissesKeyboard(.interactively)
         .refreshable {
             await viewModel.run(
                 preset: selectedPreset,
@@ -131,9 +132,8 @@ struct WhatIfView: View {
             if selectedPreset.needsAmount {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        TextField("Amount", text: $customAmount)
-                            .keyboardType(.decimalPad)
-                            .textFieldStyle(.roundedBorder)
+                        DecimalAmountField(placeholder: "Amount", text: $customAmount, bordered: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         Button("Apply") {
                             Task {
                                 await viewModel.run(
@@ -147,11 +147,13 @@ struct WhatIfView: View {
                         .buttonStyle(.borderedProminent)
                     }
                     if selectedPreset == .oneTimePurchase {
-                        TextField("Purchase date (optional YYYY-MM-DD)", text: $purchaseDateText)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .textFieldStyle(.roundedBorder)
-                        Text("Leave blank for today. Dating a purchase moves it on the chart without changing your bank.")
+                        QuietEntryField(
+                            placeholder: "Purchase date (optional YYYY-MM-DD)",
+                            text: $purchaseDateText,
+                            keyboard: .numbersAndPunctuation,
+                            bordered: true
+                        )
+                        Text("Leave blank for today. A date inside the horizon moves the purchase on the chart. A date past the horizon is not applied.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -214,9 +216,9 @@ struct WhatIfView: View {
 
             if !bundle.assumptions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Assumptions")
+                    Text("Why this forecast")
                         .font(.caption.weight(.semibold))
-                    ForEach(bundle.assumptions.prefix(3), id: \.self) { note in
+                    ForEach(bundle.assumptions.prefix(4), id: \.self) { note in
                         Text("• \(note)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -294,13 +296,23 @@ struct WhatIfView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    private func purchaseVerdict(_ result: WhatIfResponse) -> (text: String, color: Color) {
+        if !result.purchaseApplied {
+            return ("Outside this horizon, so safe-to-spend is unchanged.", .secondary)
+        }
+        if result.affordable {
+            return ("Looks affordable with your buffer.", .green)
+        }
+        return ("Would squeeze your safety buffer.", .red)
+    }
+
     private func purchaseImpact(_ result: WhatIfResponse) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Purchase check")
                 .font(.headline)
-            Text(result.affordable ? "Looks affordable with your buffer." : "Would squeeze your safety buffer.")
+            Text(purchaseVerdict(result).text)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(result.affordable ? .green : .red)
+                .foregroundStyle(purchaseVerdict(result).color)
             MoneyRow(title: "Safe before", value: result.safeToSpendBefore)
             MoneyRow(title: "Safe after", value: result.safeToSpendAfter)
             Text(result.note)
@@ -451,14 +463,31 @@ final class WhatIfViewModel {
                     simulated: simulated,
                     purchaseWhatIf: purchase,
                     recommendation: Self.recommend(baseline: baseline, simulated: simulated, preset: preset),
-                    assumptions: simulation.assumptions.isEmpty
-                        ? simulated.note.isEmpty ? [] : [simulated.note]
-                        : simulation.assumptions
+                    assumptions: Self.assumptionLines(
+                        shared: simulation.assumptions,
+                        scenario: simulated.assumptions,
+                        fallbackNote: simulated.note
+                    )
                 )
             )
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Shared forecast notes, then lines that exist only on this scenario.
+    /// Those extra lines are why this future differs from today.
+    private static func assumptionLines(
+        shared: [String],
+        scenario: [String],
+        fallbackNote: String
+    ) -> [String] {
+        let known = Set(shared)
+        let whyChanged = scenario.filter { !known.contains($0) }
+        if shared.isEmpty && whyChanged.isEmpty {
+            return fallbackNote.isEmpty ? [] : [fallbackNote]
+        }
+        return whyChanged + shared
     }
 
     private static func recommend(baseline: ScenarioSeries, simulated: ScenarioSeries, preset: WhatIfPreset) -> String {
