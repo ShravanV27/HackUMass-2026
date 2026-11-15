@@ -250,6 +250,8 @@ struct CashflowForecastResponse: Decodable, Sendable {
     let nextEvents: [CashflowEvent]
     let assumptions: [String]
     let confidence: String
+    /// Weekday cash-spend rates (`mon`…`sun`). Missing on older payloads.
+    let weekdayRates: [String: Decimal]
 
     enum CodingKeys: String, CodingKey {
         case customerId = "customer_id"
@@ -269,6 +271,7 @@ struct CashflowForecastResponse: Decodable, Sendable {
         case projectedIncomeTotal = "projected_income_total"
         case nextEvents = "next_events"
         case assumptions, confidence
+        case weekdayRates = "weekday_rates"
     }
 
     init(from decoder: Decoder) throws {
@@ -291,6 +294,13 @@ struct CashflowForecastResponse: Decodable, Sendable {
         nextEvents = try container.decodeIfPresent([CashflowEvent].self, forKey: .nextEvents) ?? []
         assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
         confidence = try container.decodeIfPresent(String.self, forKey: .confidence) ?? "medium"
+        if let asStrings = try? container.decode([String: String].self, forKey: .weekdayRates) {
+            weekdayRates = asStrings.compactMapValues { Decimal(string: $0) }
+        } else if let asDoubles = try? container.decode([String: Double].self, forKey: .weekdayRates) {
+            weekdayRates = asDoubles.mapValues { Decimal($0) }
+        } else {
+            weekdayRates = [:]
+        }
     }
 }
 

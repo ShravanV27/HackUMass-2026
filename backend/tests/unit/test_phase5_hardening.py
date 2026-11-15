@@ -260,3 +260,33 @@ def test_backtest_buckets_spend_on_utc_date() -> None:
     # Nov 8–13 inclusive at $25. Nov 14 itself is not in the synthetic history,
     # and the EST evening posts on Nov 15 UTC so it must not be counted.
     assert window.actual_spend == Decimal("150.00")
+
+
+def test_backtest_ignores_undated_sentinel_as_history() -> None:
+    """A lone 1970 sentinel must not look like years of spending history."""
+    from app.services.nessie_mapper import UNDATED_POSTED_AT
+
+    result = backtest_spend_forecast(
+        customer_id="demo-customer-001",
+        accounts=[_cash_account()],
+        transactions=[
+            Transaction(
+                transaction_id="purchase:undated",
+                customer_id="demo-customer-001",
+                account_id="acc-1",
+                amount=Decimal("-12.00"),
+                kind=TransactionKind.EXPENSE,
+                status=TransactionStatus.POSTED,
+                description="Coffee",
+                category="dining",
+                posted_at=UNDATED_POSTED_AT,
+            )
+        ],
+        scheduled_bills=[],
+        as_of=AS_OF,
+        horizon_days=7,
+        lookback_days=28,
+        windows=3,
+    )
+    assert result.sufficient_history is False
+    assert result.windows_evaluated == 0

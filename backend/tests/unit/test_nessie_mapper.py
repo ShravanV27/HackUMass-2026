@@ -310,6 +310,22 @@ def test_missing_or_invalid_transaction_date_is_stable_sentinel() -> None:
     assert first.posted_at.year == 1970
 
 
+def test_updated_at_is_not_used_as_event_time() -> None:
+    """updated_at changes when Nessie edits a row and must not move the PK."""
+    raw = {
+        "id": "txn_touch",
+        "type": "purchase",
+        "amount": 8,
+        "status": "completed",
+        "description": "Coffee",
+        "updated_at": "2026-11-14T18:00:00Z",
+    }
+    mapped = map_feed_transaction(
+        raw, app_customer_id="demo-customer-001", account_id="acct_1"
+    )
+    assert mapped.posted_at == UNDATED_POSTED_AT
+
+
 def test_sync_upsert_key_stable_when_mapping_twice() -> None:
     """Same Nessie row must produce the same TigerData conflict key twice."""
     feed = [

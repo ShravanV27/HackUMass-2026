@@ -58,20 +58,28 @@ ON CONFLICT (transaction_id, posted_at) DO UPDATE SET
     category = EXCLUDED.category,
     counterparty_account_id = EXCLUDED.counterparty_account_id,
     ingested_at = NOW()
+WHERE transactions.customer_id = EXCLUDED.customer_id
 """
 
 _SPENDING_BY_CATEGORY = """
 SELECT
-    category,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    t.category,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
-GROUP BY category
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
+GROUP BY t.category
 ORDER BY total_spent DESC
 """
 
@@ -79,11 +87,27 @@ _CASHFLOW_WINDOW = """
 SELECT
     COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'posted' THEN amount ELSE 0 END), 0)
         AS income_posted,
-    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'posted' THEN ABS(amount) ELSE 0 END), 0)
+    COALESCE(SUM(CASE
+        WHEN kind = 'expense' AND status = 'posted'
+         AND NOT EXISTS (
+             SELECT 1 FROM accounts AS a
+             WHERE a.account_id = transactions.account_id
+               AND a.customer_id = transactions.customer_id
+               AND position('credit' in lower(a.account_type)) > 0
+         )
+        THEN ABS(amount) ELSE 0 END), 0)
         AS expenses_posted,
     COALESCE(SUM(CASE WHEN kind = 'income' AND status = 'pending' THEN amount ELSE 0 END), 0)
         AS pending_income,
-    COALESCE(SUM(CASE WHEN kind = 'expense' AND status = 'pending' THEN ABS(amount) ELSE 0 END), 0)
+    COALESCE(SUM(CASE
+        WHEN kind = 'expense' AND status = 'pending'
+         AND NOT EXISTS (
+             SELECT 1 FROM accounts AS a
+             WHERE a.account_id = transactions.account_id
+               AND a.customer_id = transactions.customer_id
+               AND position('credit' in lower(a.account_type)) > 0
+         )
+        THEN ABS(amount) ELSE 0 END), 0)
         AS pending_expenses,
     COALESCE(SUM(CASE WHEN kind = 'transfer' THEN ABS(amount) ELSE 0 END), 0)
         AS transfer_abs_sum,
@@ -96,15 +120,22 @@ WHERE customer_id = %(customer_id)s
 
 _DAILY_SPENDING_SQL = """
 SELECT
-    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    date_trunc('day', t.posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
 GROUP BY 1
 ORDER BY 1
 """
@@ -154,16 +185,23 @@ WITH NO DATA
 
 _DISCRETIONARY_DAILY_SQL = """
 SELECT
-    date_trunc('day', posted_at AT TIME ZONE 'UTC')::date AS day,
-    COALESCE(SUM(ABS(amount)), 0) AS total_spent,
+    date_trunc('day', t.posted_at AT TIME ZONE 'UTC')::date AS day,
+    COALESCE(SUM(ABS(t.amount)), 0) AS total_spent,
     COUNT(*) AS txn_count
-FROM transactions
-WHERE customer_id = %(customer_id)s
-  AND kind = 'expense'
-  AND status = 'posted'
-  AND posted_at >= %(start_at)s
-  AND posted_at < %(end_at)s
-  AND NOT (category = ANY(%(exclude_categories)s))
+FROM transactions AS t
+LEFT JOIN accounts AS a
+  ON a.account_id = t.account_id
+ AND a.customer_id = t.customer_id
+WHERE t.customer_id = %(customer_id)s
+  AND t.kind = 'expense'
+  AND t.status = 'posted'
+  AND t.posted_at >= %(start_at)s
+  AND t.posted_at < %(end_at)s
+  AND NOT (t.category = ANY(%(exclude_categories)s))
+  AND (
+        a.account_id IS NULL
+        OR position('credit' in lower(a.account_type)) = 0
+      )
 GROUP BY 1
 ORDER BY 1
 """
@@ -340,15 +378,15 @@ class TigerRepository:
         accounts: list[Account],
         transactions: list[Transaction],
         reconcile: bool,
-        transactions_complete: bool = True,
+        transactions_complete: bool = False,
     ) -> CustomerSyncWriteResult:
         """Atomically upsert the Nessie snapshot and optionally prune orphans.
 
         Orphan deletes are scoped to ``customer_id`` only and run only when
         ``reconcile`` is True (caller must certify the Nessie account fetch was
-        complete). Transaction rows missing from a kept account are removed only
-        when ``transactions_complete`` is also True, so a partial feed cannot
-        wipe history that was not returned.
+        complete) and ``transactions_complete`` is True. The default is False:
+        a caller that forgets the flag must not snapshot-delete. An incomplete
+        feed deletes nothing, including when the kept account set is empty.
         """
         keep_ids = {account.account_id for account in accounts}
         transactions = _dedupe_transactions(transactions)
@@ -434,52 +472,39 @@ class TigerRepository:
         When the transaction feed is complete, any row whose
         ``(transaction_id, posted_at)`` is absent from the snapshot is removed,
         including duplicates left by an unstable ``posted_at``. A partial feed
-        only drops transactions that belong to accounts no longer in the snapshot.
+        deletes nothing: an empty keep-set must not wipe the customer, and a
+        non-empty keep-set must not drop accounts whose transactions were not
+        fully fetched.
         """
+        if not transactions_complete:
+            return 0, 0
         keep = list(keep_account_ids)
         snapshot = list(transactions or [])
-        if transactions_complete:
-            if snapshot:
-                cur.execute(
-                    """
-                    DELETE FROM transactions AS t
-                    WHERE t.customer_id = %s
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM unnest(%s::text[], %s::timestamptz[])
-                              AS kept(transaction_id, posted_at)
-                          WHERE kept.transaction_id = t.transaction_id
-                            AND kept.posted_at = t.posted_at
-                      )
-                    """,
-                    (
-                        customer_id,
-                        [txn.transaction_id for txn in snapshot],
-                        [txn.posted_at for txn in snapshot],
-                    ),
-                )
-            else:
-                cur.execute(
-                    "DELETE FROM transactions WHERE customer_id = %s",
-                    (customer_id,),
-                )
-            transactions_deleted = cur.rowcount or 0
-        elif keep:
+        if snapshot:
             cur.execute(
                 """
-                DELETE FROM transactions
-                WHERE customer_id = %s
-                  AND account_id <> ALL(%s)
+                DELETE FROM transactions AS t
+                WHERE t.customer_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM unnest(%s::text[], %s::timestamptz[])
+                          AS kept(transaction_id, posted_at)
+                      WHERE kept.transaction_id = t.transaction_id
+                            AND kept.posted_at = t.posted_at
+                  )
                 """,
-                (customer_id, keep),
+                (
+                    customer_id,
+                    [txn.transaction_id for txn in snapshot],
+                    [txn.posted_at for txn in snapshot],
+                ),
             )
-            transactions_deleted = cur.rowcount or 0
         else:
             cur.execute(
                 "DELETE FROM transactions WHERE customer_id = %s",
                 (customer_id,),
             )
-            transactions_deleted = cur.rowcount or 0
+        transactions_deleted = cur.rowcount or 0
 
         if keep:
             cur.execute(

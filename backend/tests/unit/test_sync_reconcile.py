@@ -44,10 +44,15 @@ def _acct(account_id: str, *, balance: str = "100.00") -> dict:
 
 def test_collection_complete_detects_pagination() -> None:
     items = [{"id": "a"}]
-    assert _is_complete_collection(items, items) is True
-    assert _is_complete_collection({"items": items}, items) is True
+    # Missing metadata is incomplete. Explicit has_more false + matching total is complete.
+    assert _is_complete_collection(items, items) is False
+    assert _is_complete_collection({"items": items}, items) is False
+    assert _is_complete_collection({"items": items, "total": 1}, items) is False
     assert (
-        _is_complete_collection({"items": items, "total": 1}, items) is True
+        _is_complete_collection(
+            {"items": items, "has_more": False, "total": 1}, items
+        )
+        is True
     )
     assert (
         _is_complete_collection({"items": items, "total": 5}, items) is False
@@ -66,6 +71,7 @@ def test_collection_complete_detects_pagination() -> None:
         _is_complete_collection({"items": items, "has_more": True}, items)
         is False
     )
+    assert _is_complete_collection({"items": [], "total": 0}, []) is True
 
 
 def test_sync_reconciles_when_account_ids_change(settings: Settings) -> None:
@@ -232,6 +238,7 @@ def test_delete_stale_scoped_to_customer_only() -> None:
         accounts=accounts,
         transactions=txns,
         reconcile=True,
+        transactions_complete=True,
     )
 
     assert result.reconciled is True
@@ -413,6 +420,4 @@ def test_partial_transaction_feed_does_not_delete_by_snapshot() -> None:
         for call in cursor.execute.call_args_list
         if isinstance(call.args[0], str) and "DELETE" in call.args[0].upper()
     ]
-    assert delete_sql
-    assert all("unnest" not in sql.lower() for sql in delete_sql)
-    assert any("account_id <> ALL" in sql for sql in delete_sql)
+    assert delete_sql == []

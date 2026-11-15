@@ -216,7 +216,7 @@ struct WhatIfView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Assumptions")
                         .font(.caption.weight(.semibold))
-                    ForEach(bundle.assumptions.prefix(3), id: \.self) { note in
+                    ForEach(bundle.assumptions.prefix(4), id: \.self) { note in
                         Text("• \(note)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)

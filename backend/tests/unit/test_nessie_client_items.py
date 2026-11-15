@@ -140,7 +140,9 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
                         "balance": 100,
                         "customer_id": "nessie-cust-1",
                     }
-                ]
+                ],
+                "has_more": False,
+                "total": 1,
             }
         elif url.endswith(
             "/accounts/acct_01m7djs39b2adt8vfg8ztzpw0f/transactions"
@@ -163,7 +165,9 @@ def test_sync_customer_with_realistic_v2_items_envelopes(settings: Settings) -> 
                         "description": "Pay",
                         "transaction_date": "2026-11-02",
                     },
-                ]
+                ],
+                "has_more": False,
+                "total": 2,
             }
         else:
             payload = {"items": []}

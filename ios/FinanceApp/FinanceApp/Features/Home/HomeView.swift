@@ -155,7 +155,17 @@ struct HomeView: View {
                  : "No future paycheck is assumed until you set a payment cycle.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ForEach(cashflow.assumptions.prefix(2), id: \.self) { note in
+            if cashflow.confidence.lowercased() == "low" {
+                Text("Risk flag: thin history, so this runway can move as new transactions post.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            if let trend = weekdaySpendLine(cashflow.weekdayRates) {
+                Text(trend)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(cashflow.assumptions.prefix(4), id: \.self) { note in
                 Text("• \(note)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -165,6 +175,22 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func weekdaySpendLine(_ rates: [String: Decimal]) -> String? {
+        let order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        let labels = [
+            "mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu",
+            "fri": "Fri", "sat": "Sat", "sun": "Sun",
+        ]
+        let ranked = order.compactMap { key -> (String, Decimal)? in
+            guard let value = rates[key] else { return nil }
+            return (labels[key] ?? key, value)
+        }.sorted { $0.1 > $1.1 }
+        guard let busiest = ranked.first, let quietest = ranked.last, busiest.1 > quietest.1 else {
+            return nil
+        }
+        return "Heavier typical cash spend on \(busiest.0) than \(quietest.0)."
     }
 
     private func confidenceLabel(_ raw: String) -> String {

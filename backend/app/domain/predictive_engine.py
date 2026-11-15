@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable, Literal
 
-from app.domain.calculations import spendable_cash_balance
+from app.domain.calculations import credit_account_ids, spendable_cash_balance
 from app.models.schemas import (
     Account,
     BehaviorEvidence,
@@ -42,6 +42,8 @@ from app.models.schemas import (
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
+# Same instant as nessie_mapper.UNDATED_POSTED_AT. Undated rows are not history.
+_UNDATED_POSTED_AT = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 WEEKDAY_NAMES = (
     "mon",
@@ -66,6 +68,35 @@ def _as_utc_date(value: datetime | date) -> date:
             return value.date()
         return value.astimezone(timezone.utc).date()
     return value
+
+
+def _is_undated_posted_at(posted_at: datetime) -> bool:
+    moment = posted_at if posted_at.tzinfo else posted_at.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc) == _UNDATED_POSTED_AT
+
+
+def _card_purchases_in_lookback(
+    transactions: list[Transaction],
+    *,
+    customer_id: str,
+    card_ids: set[str],
+    as_of: date,
+    lookback_days: int,
+) -> bool:
+    if not card_ids:
+        return False
+    window_start = as_of - timedelta(days=lookback_days)
+    for txn in transactions:
+        if txn.customer_id != customer_id or txn.account_id not in card_ids:
+            continue
+        if txn.kind != TransactionKind.EXPENSE or txn.status != TransactionStatus.POSTED:
+            continue
+        if _is_undated_posted_at(txn.posted_at):
+            continue
+        day = _as_utc_date(txn.posted_at)
+        if window_start < day <= as_of and abs(txn.amount) > ZERO:
+            return True
+    return False
 
 
 def resolve_horizon_days(
@@ -139,12 +170,18 @@ def discretionary_daily_observations(
     lookback_days: int,
     exclude_categories: set[str],
     exclude_description_tokens: set[str] | None = None,
+    exclude_account_ids: set[str] | None = None,
 ) -> list[DailySpendObservation]:
-    """Posted discretionary spend per day in the lookback window."""
+    """Posted discretionary cash outflow per day in the lookback window.
+
+    ``exclude_account_ids`` drops credit-card purchases. Those swipes are not
+    cash leaving the bank; the later card payment on a cash account is.
+    """
     if lookback_days <= 0:
         raise ValueError("lookback_days must be positive")
     window_start = as_of - timedelta(days=lookback_days)
     tokens = {t.lower() for t in (exclude_description_tokens or set()) if t}
+    skipped_accounts = exclude_account_ids or set()
     by_day: dict[date, Decimal] = {}
     for txn in transactions:
         if txn.customer_id != customer_id:
@@ -152,6 +189,8 @@ def discretionary_daily_observations(
         if txn.kind != TransactionKind.EXPENSE:
             continue
         if txn.status != TransactionStatus.POSTED:
+            continue
+        if txn.account_id in skipped_accounts:
             continue
         if txn.category in exclude_categories:
             continue
@@ -461,6 +500,14 @@ def build_engine_forecast(
     if pause_categories:
         exclude = exclude | set(pause_categories)
     bill_names = {b.name for b in customer_bills}
+    card_ids = credit_account_ids(accounts, customer_id)
+    card_purchases_omitted = _card_purchases_in_lookback(
+        transactions,
+        customer_id=customer_id,
+        card_ids=card_ids,
+        as_of=as_of,
+        lookback_days=lookback_days,
+    )
 
     observations = daily_spend_history
     if observations is None:
@@ -471,6 +518,7 @@ def build_engine_forecast(
             lookback_days=lookback_days,
             exclude_categories=exclude,
             exclude_description_tokens=bill_names,
+            exclude_account_ids=card_ids,
         )
     rates, flat_daily = weekday_spend_rates(
         observations, as_of=as_of, lookback_days=lookback_days
@@ -615,6 +663,7 @@ def build_engine_forecast(
         purchase_day=purchase_day,
         purchase_skipped=purchase_skipped,
         bill_count=len(due),
+        card_purchases_omitted=card_purchases_omitted,
     )
     confidence = _forecast_confidence(
         observation_count=len(observations), lookback_days=lookback_days
@@ -656,6 +705,7 @@ def _forecast_assumptions(
     purchase_day: date | None,
     purchase_skipped: bool,
     bill_count: int,
+    card_purchases_omitted: bool = False,
 ) -> list[str]:
     notes = [
         (
@@ -695,6 +745,11 @@ def _forecast_assumptions(
     if purchase_skipped:
         notes.append(
             "Purchase date is beyond the forecast horizon, so it was not applied."
+        )
+    if card_purchases_omitted:
+        notes.append(
+            "Credit-card purchases are not immediate cash outflow. "
+            "That spending counts once; cash leaves when the card is paid."
         )
     return notes
 
@@ -1355,7 +1410,24 @@ def backtest_spend_forecast(
             note="Not enough transaction history to backtest forecasts.",
         )
 
-    oldest = min(_as_utc_date(t.posted_at) for t in customer_txns)
+    dated_days = [
+        _as_utc_date(t.posted_at)
+        for t in customer_txns
+        if not _is_undated_posted_at(t.posted_at)
+    ]
+    if not dated_days:
+        return BacktestResponse(
+            customer_id=customer_id,
+            as_of=as_of,
+            windows_evaluated=0,
+            horizon_days=horizon_days,
+            sufficient_history=False,
+            assumptions=[
+                "Undated transactions are not treated as spending history.",
+            ],
+            note="Not enough transaction history to backtest forecasts.",
+        )
+    oldest = min(dated_days)
     if oldest > earliest_needed:
         return BacktestResponse(
             customer_id=customer_id,
@@ -1373,6 +1445,7 @@ def backtest_spend_forecast(
     customer_bills = [b for b in scheduled_bills if b.customer_id == customer_id]
     exclude = {b.category for b in customer_bills} | {"Bills"}
     bill_names = {b.name for b in customer_bills}
+    card_ids = credit_account_ids(accounts, customer_id)
     results: list[BacktestWindowResult] = []
     abs_errors: list[Decimal] = []
     pct_errors: list[Decimal] = []
@@ -1392,6 +1465,8 @@ def backtest_spend_forecast(
         actual = ZERO
         end = window_as_of + timedelta(days=horizon_days)
         for txn in customer_txns:
+            if txn.account_id in card_ids:
+                continue
             day = _as_utc_date(txn.posted_at)
             if day <= window_as_of or day > end:
                 continue

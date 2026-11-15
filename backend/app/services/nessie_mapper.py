@@ -424,10 +424,11 @@ def _status(value: Any) -> TransactionStatus:
 def _transaction_posted_at(raw: dict[str, Any]) -> datetime:
     """Stable event time for TigerData PK ``(transaction_id, posted_at)``.
 
-    Nessie v2 ``TransactionDTO`` exposes ``created_at`` / ``settle_at`` /
-    ``updated_at``. Classic payloads may use purchase/transaction dates.
-    Prefer those over ``datetime.now()`` so re-sync upserts instead of inserting
-    duplicate rows with a new timestamp.
+    Nessie v2 ``TransactionDTO`` exposes ``created_at`` / ``settle_at``.
+    ``updated_at`` is not an event time — a later edit would move the
+    TigerData key — so it is ignored. Classic payloads may use
+    purchase/transaction dates. Missing dates use a stable sentinel rather
+    than ``datetime.now()``.
     """
     for key in (
         "purchase_date",
@@ -436,7 +437,6 @@ def _transaction_posted_at(raw: dict[str, Any]) -> datetime:
         "posted_at",
         "created_at",
         "settle_at",
-        "updated_at",
     ):
         value = raw.get(key)
         if value not in (None, ""):

@@ -68,14 +68,21 @@ class NessieSyncService:
         ]
 
         all_txns = []
-        feeds_complete = True
-        for account in accounts:
-            account_txns, feed_complete = self._transactions_for_account(
-                app_customer_id=app_customer_id,
-                account_id=account.account_id,
+        if not accounts:
+            # An empty body is not "this customer has zero accounts". Only an
+            # explicit total of 0 may snapshot-delete the stored customer.
+            feeds_complete = (
+                collection.reported_total == 0 and collection.complete
             )
-            all_txns.extend(account_txns)
-            feeds_complete = feeds_complete and feed_complete
+        else:
+            feeds_complete = True
+            for account in accounts:
+                account_txns, feed_complete = self._transactions_for_account(
+                    app_customer_id=app_customer_id,
+                    account_id=account.account_id,
+                )
+                all_txns.extend(account_txns)
+                feeds_complete = feeds_complete and feed_complete
 
         write = self._repo.commit_customer_sync(
             customer_id=app_customer_id,
@@ -125,6 +132,8 @@ class NessieSyncService:
         deposits = self._nessie.list_deposits(account_id)
         withdrawals = self._nessie.list_withdrawals(account_id)
         transfers = self._nessie.list_transfers(account_id)
+        # Classic /purchases|deposits|withdrawals|transfers GETs are POST-only
+        # on v2 (405 → []). That empty fallback is not a complete snapshot.
         return (
             collect_account_transactions(
                 app_customer_id=app_customer_id,
@@ -134,7 +143,7 @@ class NessieSyncService:
                 withdrawals=withdrawals,
                 transfers=transfers,
             ),
-            True,
+            False,
         )
 
     def _read_transaction_feed(self, account_id: str) -> tuple[list[dict], bool]:

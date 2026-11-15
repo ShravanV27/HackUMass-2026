@@ -9,6 +9,24 @@ import pytest
 from app.db.repository import TigerRepository, TigerSchemaError, _split_sql
 
 
+def test_cash_sql_excludes_credit_card_purchases() -> None:
+    """Card swipes must not inflate SQL cash outflow, history, or category totals."""
+    from app.db.repository import (
+        _CASHFLOW_WINDOW,
+        _DAILY_SPENDING_SQL,
+        _DISCRETIONARY_DAILY_SQL,
+        _SPENDING_BY_CATEGORY,
+    )
+
+    for sql in (
+        _CASHFLOW_WINDOW,
+        _DISCRETIONARY_DAILY_SQL,
+        _DAILY_SPENDING_SQL,
+        _SPENDING_BY_CATEGORY,
+    ):
+        assert "position('credit' in lower(a.account_type))" in sql
+
+
 def test_schema_sql_splits_and_includes_hypertable() -> None:
     from pathlib import Path
 

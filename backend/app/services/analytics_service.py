@@ -9,6 +9,7 @@ from decimal import Decimal
 from app.config import Settings
 from app.db.connection import get_connection
 from app.db.repository import TigerRepository
+from app.domain.calculations import credit_account_ids, is_card_payment
 from app.models.schemas import (
     CategorySpend,
     DailySpendPoint,
@@ -46,8 +47,13 @@ def spending_window_summary(
                     customer_id, start_at=start_at, end_at=end_at
                 )
             ]
+            # Continuous aggregates sum every expense, including card swipes.
+            # The filtered query keeps card purchases out of cash totals.
             daily_rows = repo.daily_spending(
-                customer_id, start_at=start_at, end_at=end_at
+                customer_id,
+                start_at=start_at,
+                end_at=end_at,
+                prefer_continuous_aggregate=False,
             )
             daily = [
                 DailySpendPoint(
@@ -91,6 +97,8 @@ def _memory_spending_window(
     end_at: datetime,
 ) -> SpendingWindowSummary:
     txns = provider.list_transactions(customer_id)
+    accounts = provider.list_accounts(customer_id)
+    card_ids = credit_account_ids(accounts, customer_id)
     category_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     category_counts: dict[str, int] = defaultdict(int)
     income_posted = Decimal("0")
@@ -102,6 +110,9 @@ def _memory_spending_window(
 
     daily_totals: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
     daily_counts: dict[date, int] = defaultdict(int)
+    card_purchase_total = Decimal("0")
+    card_payment_total = Decimal("0")
+    payment_spots: list[tuple[str, date, Decimal]] = []
 
     for txn in txns:
         posted = txn.posted_at
@@ -124,15 +135,42 @@ def _memory_spending_window(
 
         if txn.kind == TransactionKind.EXPENSE:
             spent = abs(txn.amount)
-            if txn.status.value == "posted":
-                expenses_posted += spent
+            day = posted.astimezone(timezone.utc).date()
+            on_card = txn.account_id in card_ids
+            payment = is_card_payment(txn, card_ids)
+            if txn.status.value != "posted":
+                # A pending swipe on the card has not left cash yet.
+                if not on_card:
+                    pending_expenses += spent
+                continue
+            if on_card:
+                # Spending counts on the purchase. Cash waits for the payment.
+                card_purchase_total += spent
                 category_totals[txn.category] += spent
                 category_counts[txn.category] += 1
-                day = posted.astimezone(timezone.utc).date()
                 daily_totals[day] += spent
                 daily_counts[day] += 1
-            else:
-                pending_expenses += spent
+                continue
+            if payment:
+                card_payment_total += spent
+                expenses_posted += spent
+                payment_spots.append((txn.category, day, spent))
+                continue
+            expenses_posted += spent
+            category_totals[txn.category] += spent
+            category_counts[txn.category] += 1
+            daily_totals[day] += spent
+            daily_counts[day] += 1
+
+    # A card payment with no (or only partial) purchases in the window is the
+    # only record of that spend, so the unmatched remainder counts once.
+    unmatched_payment = card_payment_total - min(card_purchase_total, card_payment_total)
+    if unmatched_payment > 0 and payment_spots:
+        category, day, _amount = payment_spots[-1]
+        category_totals[category] += unmatched_payment
+        category_counts[category] += 1
+        daily_totals[day] += unmatched_payment
+        daily_counts[day] += 1
 
     if transfer_legs >= 2 and transfer_legs % 2 == 0:
         transfer_volume = (transfer_abs / 2).quantize(Decimal("0.01"))
