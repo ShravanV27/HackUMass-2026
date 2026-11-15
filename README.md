@@ -46,8 +46,6 @@ Four tabs in the SwiftUI Simulator client:
 3. **What If?** — compare alternative futures  
 4. **Settings** — preferences + Demo Mode lab  
 
-> Screenshots: drop PNGs into `docs/images/` (for example `home.png`, `insights.png`) and link them here when ready.
-
 ---
 
 ## How it fits together
