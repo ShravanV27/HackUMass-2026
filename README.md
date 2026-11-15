@@ -1,139 +1,149 @@
-# HackUMass-2026
+# Centsible
 
-**Centsible** — predictive personal finance (SwiftUI + FastAPI) using Nessie v2 as the simulated bank, TigerData analytics, and Gemini coaching. Mock data is the default so the iOS Simulator works without live credentials.
+**A financial intelligence companion** that helps you see safe-to-spend, cash runway, and what-if outcomes *before* money moves.
 
-## Layout
+Centsible is a HackUMass prototype of how a banking partner (for example Capital One) could offer predictive coaching on top of customer-authorized account data. Today it runs against **Nessie**, Capital One’s synthetic banking API — not real customer accounts.
 
-- `backend/` — FastAPI app, domain math, mock/live providers
-- `ios/FinanceApp/` — SwiftUI Simulator client
-- `scripts/reset_demo.py` — one-command live demo setup
-- `.env` — local secrets (gitignored); see `.env.example`
+---
 
-## 1. Install dependencies
+## The problem
+
+Most banking apps show balances and past transactions. They rarely answer the questions that matter day to day:
+
+- How much can I safely spend this week?
+- Will this bill cluster push me close to zero?
+- What if I cut spending 20%, or buy something next Friday?
+
+Centsible turns account history, bills, and simple preferences into **grounded forecasts and alerts**, then uses Gemini only to *explain* those numbers — never to invent balances or move money.
+
+---
+
+## What works today
+
+| Area | What you get |
+|------|----------------|
+| **Home** | Safe-to-spend, cash runway, health status, 7/14/30-day cashflow, bills, accounts, recent activity, attention alerts |
+| **Insights** | Spending behavior, drift, deterministic alerts, Gemini coaching + Copilot (when keyed in live mode) |
+| **What If?** | Multi-scenario futures vs baseline — hypothetical only; never writes bank data |
+| **Settings** | Payment cycle, safety buffer, **Demo Mode** (sandbox purchases/deposits/bills), developer details |
+
+**Honest limits**
+
+- Prototype / hackathon demo — single demo customer, no production auth.
+- **Nessie = synthetic data.** We do **not** access real Capital One customer accounts or have an official Capital One product integration.
+- Gemini narrates precomputed metrics; Python owns every dollar figure.
+- Forecast backtest exists as an API (`GET .../predictions/backtest`) but is not yet exposed in the iOS UI.
+- Mock mode is the default so the Simulator works with zero external credentials.
+
+---
+
+## App overview
+
+Four tabs in the SwiftUI Simulator client:
+
+1. **Home** — financial health at a glance  
+2. **Insights** — alerts, coaching, Copilot Q&A  
+3. **What If?** — compare alternative futures  
+4. **Settings** — preferences + Demo Mode lab  
+
+> Screenshots: drop PNGs into `docs/images/` (for example `home.png`, `insights.png`) and link them here when ready.
+
+---
+
+## How it fits together
+
+```text
+┌─────────────┐     sync      ┌──────────────┐
+│   Nessie    │ ───────────►  │  TigerData   │
+│ (sim bank)  │               │ (time-series)│
+└─────────────┘               └──────┬───────┘
+                                     │
+                              ┌──────▼───────┐
+                              │   FastAPI    │
+                              │ domain math  │
+                              └──────┬───────┘
+                        ┌────────────┼────────────┐
+                        ▼            ▼            ▼
+                   Predictions    Alerts     Gemini narration
+                        └────────────┬────────────┘
+                                     ▼
+                              SwiftUI (Centsible)
+```
+
+| Piece | Role |
+|-------|------|
+| **Nessie** | Simulated bank: accounts, transactions, bills (read; optional Demo Mode writes) |
+| **TigerData** | Postgres/Timescale store for synced history and SQL spending analytics |
+| **FastAPI** | API + predictive engine (source of truth for money math) |
+| **Gemini** | Optional coaching/Copilot prose over already-computed metrics |
+| **SwiftUI** | Customer-facing iOS Simulator app |
+
+More detail: [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Tech stack
+
+- **iOS:** SwiftUI (iOS 17+), Xcode project `ios/FinanceApp/`
+- **API:** FastAPI + Uvicorn, Pydantic
+- **Data:** Nessie v2 API, TigerData (Postgres/Timescale via `psycopg`)
+- **AI:** Google Gemini (`google-genai`, default model `gemini-3.5-flash-lite`)
+- **Tests:** pytest (+ httpx for API tests)
+
+---
+
+## Quick start (mock mode)
+
+No Nessie, TigerData, or Gemini keys required.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install -r backend/requirements-dev.txt   # pytest + httpx
-cp .env.example .env   # then fill in keys for live mode
-```
+pip install -r backend/requirements-dev.txt
+cp .env.example .env   # USE_MOCK_DATA=true by default
 
-## 2. One-command demo setup (live sandbox)
-
-Preview (no writes):
-
-```bash
-source .venv/bin/activate
-python scripts/reset_demo.py --dry-run
-```
-
-Reset designated Nessie sandbox + HackUMass TigerData (`DATABASE_URL`), simulate ~75 days of history, sync, and verify predictions:
-
-```bash
-python scripts/reset_demo.py --reset
-```
-
-If Nessie succeeds but TigerData sync fails:
-
-```bash
-python scripts/reset_demo.py --resume
-```
-
-`--reset` / `--resume` are sufficient confirmation for the disposable hackathon environments. No extra `CONFIRM_*` variables.
-
-## 3. Start FastAPI
-
-Mock mode (default):
-
-```bash
-source .venv/bin/activate
 cd backend
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Health: `GET http://127.0.0.1:8000/health`  
-Demo customer: `demo-customer-001`
+Then open `ios/FinanceApp/FinanceApp.xcodeproj` in Xcode, pick an iPhone Simulator, and Run. Choose **Continue with sample data** on the welcome screen.
 
-## 4. Run the SwiftUI app
+Health check: `GET http://127.0.0.1:8000/health`  
+Demo customer id: `demo-customer-001`
 
-1. Start the backend on `127.0.0.1:8000`.
-2. Open `ios/FinanceApp/FinanceApp.xcodeproj` in Xcode.
-3. Select an iPhone Simulator and Run.
+Full install, live sandbox, env vars, and tests: [`docs/setup.md`](docs/setup.md).
 
-The app calls `GET /customers/demo-customer-001/dashboard` and M5 prediction endpoints under `/predictions/*`.
+---
 
-## 5. Automated tests
+## Demo
 
-```bash
-source .venv/bin/activate
-cd backend
+<!-- Replace with your demo link -->
+**Demo video / walkthrough:** `youtube.com/shorts/dLe3wYw77Ik?feature=share`
 
-# Offline suite (default — no external APIs)
-pytest
-
-# Live suite (read-only Nessie + isolated TigerData; Gemini when keyed)
-# Requires LIVE_TEST_DATABASE_URL ≠ DATABASE_URL
-pytest --run-live
-```
-
-Details: [`docs/live_testing.md`](docs/live_testing.md).
-
-## 6. Mock vs live mode
-
-| Mode | `.env` | Notes |
-|------|--------|--------|
-| Mock | `USE_MOCK_DATA=true` | Fixture data; no Nessie/TigerData/Gemini required |
-| Live | `USE_MOCK_DATA=false` | Needs `NESSIE_*`, `DATABASE_URL`, optional `GEMINI_*` |
-
-Live mode maps `NESSIE_CUSTOMER_ID` → `DEMO_CUSTOMER_ID`. After a reset, keep `DEMO_CUSTOMER_ID=demo-customer-001` and let `reset_demo.py` update `NESSIE_CUSTOMER_ID`.
-
-### Hackathon demo
-
-- Judge walkthrough: [`docs/demo_script.md`](docs/demo_script.md)
-- Architecture / sponsor roles: [`docs/architecture.md`](docs/architecture.md)
-
-### Centsible iOS tabs (Phase 4)
-
-- **Home** — health, safe-to-spend, runway, one cashflow forecast (7/14/30), bills, activity
-- **Insights** — behavior, drift, alerts, Gemini coaching + Copilot
-- **What If?** — baseline vs simulated futures (`/predictions/scenarios`); never writes bank data
-- **Settings** — payment cycle, safety buffer, **Demo Mode** (purchases/deposits/bills), Developer details
-
-### Insights + Copilot (Phase 3)
-
-- `GET /alerts` — deterministic overdraft / drift / category-spike / bill-cluster alerts
-- `GET /insights` — alert briefing + coaching (`ai_generated` when Gemini is used in live mode)
-- `POST /copilot` — grounded Q&A over prediction-engine metrics (optional scenario math)
-
-### Demo Mode (Phase 2 lab, relocated in Phase 4)
-
-Settings → **Demo Mode** + `POST /customers/{id}/demo/{purchase|deposit|bill}` create real sandbox writes (or mock in-memory mutations), force-sync TigerData, and return before/after impact. Hypothetical `/predictions/scenarios` stays on **What If?**.
-
-Enable writes explicitly:
+Live sandbox reset (optional):
 
 ```bash
-ALLOW_NESSIE_WRITES=true
+python scripts/reset_demo.py --dry-run   # preview
+python scripts/reset_demo.py --reset     # Nessie + TigerData
+python scripts/reset_demo.py --resume    # TigerData only after a partial reset
 ```
 
-Never deletes or resets Nessie data. Bind an existing sandbox customer via the onboarding screen or `POST /session/bind-customer`.
+---
 
-### Environment variables
+## Documentation
 
-| Variable | Purpose |
-|----------|---------|
-| `USE_MOCK_DATA` | Provider mode |
-| `DEMO_CUSTOMER_ID` | App customer id (stable) |
-| `NESSIE_CUSTOMER_ID` | Nessie sandbox customer |
-| `NESSIE_API_KEY` / `NESSIE_BASE_URL` | Nessie v2 access |
-| `DATABASE_URL` | HackUMass TigerData database |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | Optional narration |
+| Doc | Contents |
+|-----|----------|
+| [`docs/architecture.md`](docs/architecture.md) | Data flow, component roles, API surface, limitations |
+| [`docs/setup.md`](docs/setup.md) | Install, environment, mock vs live, testing |
+| [`docs/live_testing.md`](docs/live_testing.md) | Opt-in live integration tests |
+| [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | How to contribute safely |
 
-Test-only: `LIVE_TEST_DATABASE_URL` (isolated DB for `pytest --run-live`).
+---
 
-## Notes
+## Product vision
 
-- Do not commit `.env` or API keys.
-- Native SwiftUI does not need browser CORS.
-- Nessie historical simulation may produce irregular (fraud-oriented) activity rather than household spending; predictions still run, but interpret drift carefully. See the summary printed by `reset_demo.py`.
-- Architecture overview: [`docs/architecture.md`](docs/architecture.md)
+Centsible sketches a **customer-authorized financial intelligence layer**: a bank (or partner) could connect real accounts with consent, keep deterministic risk and cashflow math in a trusted backend, and use generative AI only for explanation and coaching.
+
+This repo demonstrates that shape with synthetic Nessie data and a Simulator client — a prototype, not a production banking product.
