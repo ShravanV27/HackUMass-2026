@@ -54,10 +54,12 @@ struct SettingsView: View {
                             explanation: "Cash you want to keep untouched. Safe-to-spend subtracts this amount after bills and estimated spending."
                         )
                         Spacer()
-                        TextField("Buffer", text: $bufferText)
-                            .keyboardType(.decimalPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 120)
+                        DecimalAmountField(
+                            placeholder: "Buffer",
+                            text: $bufferText,
+                            alignment: .trailing
+                        )
+                        .frame(maxWidth: 140)
                     }
                     Button("Save buffer") {
                         if let value = Decimal(string: bufferText.replacingOccurrences(of: ",", with: "")) {
@@ -78,8 +80,7 @@ struct SettingsView: View {
                         TextField("Next payday (YYYY-MM-DD)", text: $nextPayday)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("Paycheck amount", text: $paycheckText)
-                            .keyboardType(.decimalPad)
+                        DecimalAmountField(placeholder: "Paycheck amount", text: $paycheckText)
                     }
                     Button("Save payment cycle") {
                         Task {

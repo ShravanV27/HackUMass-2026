@@ -22,8 +22,10 @@ _CENT = Decimal("0.01")
 # A trailing "." may end the sentence ("$-1.50."). It must not be treated as
 # another decimal point, or a grounded amount is dropped from the allow-list
 # while the same token in the reply is still treated as a citation.
+# Dollar amounts must consume the whole number. A pattern that stops after
+# three digits would read $7085.19 as $708 and reject a real safe-to-spend.
 _CITED_AMOUNT_RE = re.compile(
-    r"\$\s*-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\$\s*-?\d+(?:\.\d+)?"
+    r"\$\s*-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
     r"|(?<![\w.])-?\d+\.\d{2}(?![\w])"
 )
 _EVIDENCE_NUMBER_RE = re.compile(
@@ -125,8 +127,15 @@ class GeminiClient:
         }
         prompt = (
             "You are a grounded finance copilot. Answer the user question using only "
-            "grounded_metrics. If the question requires a number not present, refuse "
-            "politely and list which metrics you do have. Keep the answer under 120 words. "
+            "grounded_metrics. Keep the answer under 120 words. "
+            "When asked why safe-to-spend is what it is, explain safe_to_spend_formula "
+            "using available_balance, pending_income, pending_expenses, "
+            "scheduled_bills_total, estimated_spend_total, and minimum_buffer. "
+            "Those fields are the calculation. Do not say the calculation steps are "
+            "missing when they are present. Say that projected paydays are excluded. "
+            "Refuse only when the question needs a metric that is not in grounded_metrics, "
+            "and then list the metrics you do have. "
+            "Never introduce a dollar amount that is not one of the provided values. "
             "If needs_clarification is true, ask the clarification question — do not invent "
             "a scenario. If scenario_name is present, compare baseline_* vs scenario_* "
             "(safe-to-spend, min/ending balance, overdraft risk) and cite those deltas. "

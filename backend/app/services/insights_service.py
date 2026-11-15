@@ -262,6 +262,7 @@ def answer_copilot(
         "baseline_ending_balance": str(forecast.ending_balance),
         "baseline_overdraft_risk": overdraft.overdraft_risk,
     }
+    _attach_safe_to_spend_breakdown(grounded, safe=safe, forecast=forecast)
 
     intent = parse_scenario_intent(
         body.question,
@@ -605,8 +606,15 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
 
     if "safe" in q and "afford" not in q:
         return (
-            f"Safe to spend is ${grounded['safe_to_spend']} after bills, "
-            f"estimated spend (${grounded['estimated_spend_total']}), and buffer."
+            f"Safe to spend is ${grounded['safe_to_spend']}. "
+            f"Python computes that as spendable cash ${grounded['available_balance']} "
+            f"plus pending income ${grounded['pending_income']}, "
+            f"minus pending expenses ${grounded['pending_expenses']}, "
+            f"scheduled bills ${grounded['scheduled_bills_total']}, "
+            f"typical discretionary spend ${grounded['estimated_spend_total']}, "
+            f"and the ${grounded['minimum_buffer']} safety buffer. "
+            "The displayed amount is floored at $0. "
+            "Future paychecks are not included."
         )
     if "overdraft" in q or "zero" in q or "runway" in q:
         return (
@@ -618,6 +626,42 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
         f"Using grounded metrics: safe to spend ${grounded['safe_to_spend']}, "
         f"min runway ${grounded['min_projected_balance']}, "
         f"overdraft {grounded['overdraft_risk']}."
+    )
+
+
+def _attach_safe_to_spend_breakdown(
+    grounded: dict[str, Any],
+    *,
+    safe: Any,
+    forecast: Any,
+) -> None:
+    """Add the Python safe-to-spend inputs so Copilot can explain the result.
+
+    Every dollar here is already computed by the engine. Gemini may cite these
+    values and must not invent others. Projected paydays stay out of the formula.
+    """
+    before_floor = (
+        safe.available_balance
+        + safe.pending_income
+        - safe.pending_expenses
+        - safe.scheduled_bills_total
+        - safe.estimated_spend_total
+        - safe.minimum_buffer
+    ).quantize(Decimal("0.01"))
+    grounded["available_balance"] = str(safe.available_balance)
+    grounded["pending_income"] = str(safe.pending_income)
+    grounded["pending_expenses"] = str(safe.pending_expenses)
+    grounded["minimum_buffer"] = str(safe.minimum_buffer)
+    grounded["projected_income_total"] = str(forecast.projected_income_total)
+    grounded["income_assumed"] = "true" if forecast.income_assumed else "false"
+    grounded["income_included_in_safe_to_spend"] = "false"
+    grounded["display_floor"] = "0.00"
+    grounded["safe_to_spend_before_floor"] = str(before_floor)
+    grounded["safe_to_spend_formula"] = (
+        "safe_to_spend_before_floor = available_balance + pending_income "
+        "- pending_expenses - scheduled_bills_total - estimated_spend_total "
+        "- minimum_buffer. Displayed safe_to_spend floors that result at 0. "
+        "projected_income_total is not part of safe-to-spend."
     )
 
 

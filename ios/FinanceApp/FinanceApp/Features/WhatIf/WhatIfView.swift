@@ -78,6 +78,7 @@ struct WhatIfView: View {
             .padding()
             .opacity(viewModel.isRefreshing ? 0.72 : 1)
         }
+        .scrollDismissesKeyboard(.interactively)
         .refreshable {
             await viewModel.run(
                 preset: selectedPreset,
@@ -131,9 +132,8 @@ struct WhatIfView: View {
             if selectedPreset.needsAmount {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        TextField("Amount", text: $customAmount)
-                            .keyboardType(.decimalPad)
-                            .textFieldStyle(.roundedBorder)
+                        DecimalAmountField(placeholder: "Amount", text: $customAmount, bordered: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         Button("Apply") {
                             Task {
                                 await viewModel.run(
@@ -147,10 +147,12 @@ struct WhatIfView: View {
                         .buttonStyle(.borderedProminent)
                     }
                     if selectedPreset == .oneTimePurchase {
-                        TextField("Purchase date (optional YYYY-MM-DD)", text: $purchaseDateText)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .textFieldStyle(.roundedBorder)
+                        QuietEntryField(
+                            placeholder: "Purchase date (optional YYYY-MM-DD)",
+                            text: $purchaseDateText,
+                            keyboard: .numbersAndPunctuation,
+                            bordered: true
+                        )
                         Text("Leave blank for today. A date inside the horizon moves the purchase on the chart. A date past the horizon is not applied.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
