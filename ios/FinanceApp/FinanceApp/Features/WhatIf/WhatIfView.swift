@@ -151,7 +151,7 @@ struct WhatIfView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textFieldStyle(.roundedBorder)
-                        Text("Leave blank for today. Dating a purchase moves it on the chart without changing your bank.")
+                        Text("Leave blank for today. A date inside the horizon moves the purchase on the chart. A date past the horizon is not applied.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -294,13 +294,23 @@ struct WhatIfView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    private func purchaseVerdict(_ result: WhatIfResponse) -> (text: String, color: Color) {
+        if !result.purchaseApplied {
+            return ("Outside this horizon, so safe-to-spend is unchanged.", .secondary)
+        }
+        if result.affordable {
+            return ("Looks affordable with your buffer.", .green)
+        }
+        return ("Would squeeze your safety buffer.", .red)
+    }
+
     private func purchaseImpact(_ result: WhatIfResponse) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Purchase check")
                 .font(.headline)
-            Text(result.affordable ? "Looks affordable with your buffer." : "Would squeeze your safety buffer.")
+            Text(purchaseVerdict(result).text)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(result.affordable ? .green : .red)
+                .foregroundStyle(purchaseVerdict(result).color)
             MoneyRow(title: "Safe before", value: result.safeToSpendBefore)
             MoneyRow(title: "Safe after", value: result.safeToSpendAfter)
             Text(result.note)

@@ -114,6 +114,11 @@ struct InsightsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if let plan = behavior.loanPaymentSuggestions.first, !plan.isEmpty {
+                    Text(plan)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else if let segment = bundle.insights.behaviorSegment {
                 Text(BehaviorLabel.display(segment))
                     .font(.title3.weight(.semibold))
@@ -279,9 +284,9 @@ struct InsightsView: View {
 
     private func behaviorReason(_ evidence: BehaviorEvidence?) -> String? {
         guard let evidence else { return nil }
-        let weekend = evidence.weekendSpendShare.formatted(.number.precision(.fractionLength(0)))
-        let bills = evidence.billToCashRatio.formatted(.number.precision(.fractionLength(0)))
-        let drift = evidence.driftPct.formatted(.number.precision(.fractionLength(0)))
+        let weekend = evidence.weekendSpendShare.formatted(.number.precision(.fractionLength(0...1)))
+        let bills = evidence.billToCashRatio.formatted(.number.precision(.fractionLength(0...1)))
+        let drift = evidence.driftPct.formatted(.number.precision(.fractionLength(0...1)))
         var line = "Why: weekends are \(weekend)% of spend, bills are \(bills)% of cash, drift \(drift)%."
         if let lead = evidence.topCategories.first, !lead.isEmpty {
             line += " \(lead) leads."

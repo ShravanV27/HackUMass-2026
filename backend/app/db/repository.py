@@ -197,7 +197,13 @@ WHERE t.customer_id = %(customer_id)s
   AND t.status = 'posted'
   AND t.posted_at >= %(start_at)s
   AND t.posted_at < %(end_at)s
-  AND NOT (t.category = ANY(%(exclude_categories)s))
+  AND NOT (lower(t.category) = ANY(%(exclude_categories)s))
+  AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(%(exclude_description_tokens)s::text[]) AS token(value)
+        WHERE token.value <> ''
+          AND position(token.value in lower(COALESCE(t.description, ''))) > 0
+      )
   AND (
         a.account_id IS NULL
         OR position('credit' in lower(a.account_type)) = 0
@@ -758,18 +764,27 @@ class TigerRepository:
         start_at: datetime,
         end_at: datetime,
         exclude_categories: list[str] | None = None,
+        exclude_description_tokens: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Posted expense totals by day, excluding bill-like categories.
 
         Uses indexed SQL (not cagg) so category filters stay accurate for the
         PredictiveEngine weekday model without an extra full-table scan in Python
-        when the caller prefers TigerData.
+        when the caller prefers TigerData. Category and bill-name checks are
+        case-insensitive, matching the in-memory discretionary filter.
         """
         params = {
             "customer_id": customer_id,
             "start_at": start_at,
             "end_at": end_at,
-            "exclude_categories": list(exclude_categories or []),
+            "exclude_categories": [
+                category.casefold() for category in (exclude_categories or []) if category
+            ],
+            "exclude_description_tokens": [
+                token.strip().lower()
+                for token in (exclude_description_tokens or [])
+                if token and token.strip()
+            ],
         }
         with self._conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_DISCRETIONARY_DAILY_SQL, params)

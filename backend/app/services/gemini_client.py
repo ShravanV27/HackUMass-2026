@@ -128,7 +128,9 @@ class GeminiClient:
             "a scenario. If scenario_name is present, compare baseline_* vs scenario_* "
             "(safe-to-spend, min/ending balance, overdraft risk) and cite those deltas. "
             "Never claim a purchase is affordable unless scenario_affordable is exactly "
-            "'true'. Never describe a 20% cut unless scenario_name is cut_discretionary_20. "
+            "'true'. If scenario_purchase_applied is 'false', say the purchase is outside "
+            "this horizon and was not applied; do not call it affordable or unaffordable. "
+            "Never describe a 20% cut unless scenario_name is cut_discretionary_20. "
             f"{_GROUNDING_RULES} "
             f"JSON: {json.dumps(payload, default=str)}"
         )

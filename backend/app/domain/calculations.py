@@ -202,9 +202,19 @@ def counted_posted_spending(
             continue
         kept.append((txn, amount))
     if credit_ids is not None and payment_rows:
-        unmatched = payments - (purchases if purchases <= payments else payments)
-        if unmatched > ZERO:
-            kept.append((payment_rows[-1], unmatched))
+        # Match earlier payments first so an unmatched remainder stays on the
+        # payment that was not covered, instead of collapsing every payment
+        # onto the last row's category.
+        remaining_match = purchases if purchases <= payments else payments
+        for txn in sorted(payment_rows, key=lambda row: (row.posted_at, row.transaction_id)):
+            amount = abs(txn.amount)
+            if remaining_match >= amount:
+                remaining_match -= amount
+                continue
+            kept_amount = _money(amount - remaining_match)
+            remaining_match = ZERO
+            if kept_amount > ZERO:
+                kept.append((txn, kept_amount))
     return kept
 
 

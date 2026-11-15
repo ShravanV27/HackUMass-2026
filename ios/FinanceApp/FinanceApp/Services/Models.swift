@@ -392,6 +392,7 @@ struct WhatIfResponse: Decodable, Sendable {
     let note: String
     let purchaseDate: String?
     let assumptions: [String]
+    let purchaseApplied: Bool
 
     enum CodingKeys: String, CodingKey {
         case customerId = "customer_id"
@@ -404,6 +405,7 @@ struct WhatIfResponse: Decodable, Sendable {
         case note
         case purchaseDate = "purchase_date"
         case assumptions
+        case purchaseApplied = "purchase_applied"
     }
 
     init(from decoder: Decoder) throws {
@@ -418,6 +420,7 @@ struct WhatIfResponse: Decodable, Sendable {
         note = try container.decode(String.self, forKey: .note)
         purchaseDate = try container.decodeIfPresent(String.self, forKey: .purchaseDate)
         assumptions = try container.decodeIfPresent([String].self, forKey: .assumptions) ?? []
+        purchaseApplied = try container.decodeIfPresent(Bool.self, forKey: .purchaseApplied) ?? true
     }
 }
 

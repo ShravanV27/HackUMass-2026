@@ -65,6 +65,13 @@ def _tiger_discretionary_history(
     bills: list[ScheduledBill],
 ) -> list[DailySpendObservation] | None:
     exclude = sorted({b.category for b in bills if b.customer_id == customer_id} | {"Bills"})
+    bill_names = sorted(
+        {
+            bill.name.strip()
+            for bill in bills
+            if bill.customer_id == customer_id and bill.name and bill.name.strip()
+        }
+    )
     start, end = sql_bounds_for_half_open_days(
         start_exclusive=as_of - timedelta(days=lookback_days),
         end_inclusive=as_of,
@@ -78,6 +85,7 @@ def _tiger_discretionary_history(
                 start_at=start,
                 end_at=end,
                 exclude_categories=exclude,
+                exclude_description_tokens=bill_names,
             )
         return [
             DailySpendObservation(

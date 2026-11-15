@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from app.config import Settings
 from app.db.repository import (
@@ -230,6 +231,38 @@ def test_second_page_http_500_keeps_first_page_incomplete(settings: Settings) ->
     feed = client.fetch_account_transactions("acct")
     assert feed.complete is False
     assert feed.items[0]["id"] == "txn_1"
+
+
+def test_second_page_timeout_stays_incomplete(settings: Settings) -> None:
+    """A timed-out later page must not look like a finished snapshot."""
+    session = MagicMock()
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        if (params or {}).get("cursor") == "p2":
+            raise requests.Timeout("timed out")
+        return _response(
+            {
+                "items": [{"id": "txn_1", "type": "purchase", "amount": 9}],
+                "has_more": True,
+                "next": "/accounts/acct/transactions?cursor=p2",
+            }
+        )
+
+    session.get.side_effect = fake_get
+    client = NessieClient(settings, session=session)
+    feed = client.fetch_account_transactions("acct")
+    assert feed.complete is False
+    assert [row["id"] for row in feed.items] == ["txn_1"]
+
+
+def test_first_page_timeout_does_not_commit(settings: Settings) -> None:
+    session = MagicMock()
+    session.get.side_effect = requests.Timeout("timed out")
+    repo = MagicMock()
+    client = NessieClient(settings, session=session)
+    with pytest.raises(NessieClientError):
+        NessieSyncService(settings, client, repo).sync_customer("demo-customer-001")
+    repo.commit_customer_sync.assert_not_called()
 
 
 def test_off_host_next_url_does_not_follow(settings: Settings) -> None:

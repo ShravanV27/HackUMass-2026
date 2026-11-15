@@ -87,6 +87,11 @@ struct HomeView: View {
                     }
                     Text(max(bundle.safe.safeToSpend, Decimal(0)), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    if bundle.safe.safeToSpend < 0 {
+                        Text("Already short \(abs(bundle.safe.safeToSpend).formatted(.currency(code: "USD"))) after bills, buffer, and typical spend.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
@@ -120,6 +125,12 @@ struct HomeView: View {
                 Text("On track to stay above your \(bundle.safe.minimumBuffer.formatted(.currency(code: "USD"))) buffer.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if bundle.overdraft.suggestedDailyCutback > 0 {
+                Text("About \(bundle.overdraft.suggestedDailyCutback.formatted(.currency(code: "USD"))) less discretionary spend per day would restore the buffer.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
             }
 
             Picker("Horizon", selection: Binding(

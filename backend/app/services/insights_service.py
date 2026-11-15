@@ -15,6 +15,7 @@ from app.domain.predictive_engine import (
     classify_behavior,
     compute_engine_safe_to_spend,
     compute_overdraft_risk,
+    purchase_applies_in_horizon,
     simulate_scenarios,
     sql_bounds_for_half_open_days,
 )
@@ -401,7 +402,14 @@ def _apply_scenario_grounding(
     by_name = {s.name: s for s in sim.scenarios}
     baseline = by_name.get("baseline") or sim.scenarios[0]
     chosen = by_name.get(intent.name) or sim.scenarios[-1]
-    _attach_scenario_metrics(grounded, baseline=baseline, chosen=chosen, intent=intent)
+    _attach_scenario_metrics(
+        grounded,
+        baseline=baseline,
+        chosen=chosen,
+        intent=intent,
+        as_of=as_of,
+        horizon_days=horizon_days,
+    )
     return chosen.note
 
 
@@ -411,6 +419,8 @@ def _attach_scenario_metrics(
     baseline: ScenarioSeries,
     chosen: ScenarioSeries,
     intent: ScenarioIntent,
+    as_of: date,
+    horizon_days: int,
 ) -> None:
     grounded["scenario_name"] = chosen.name
     grounded["scenario_label"] = chosen.label
@@ -442,8 +452,18 @@ def _attach_scenario_metrics(
     )
 
     if chosen.name == "one_time_purchase":
-        affordable = chosen.safe_to_spend >= ZERO
-        grounded["scenario_affordable"] = "true" if affordable else "false"
+        applied = purchase_applies_in_horizon(
+            intent.amount or ZERO,
+            intent.on_date,
+            as_of=as_of,
+            horizon_days=horizon_days,
+        )
+        grounded["scenario_purchase_applied"] = "true" if applied else "false"
+        if applied:
+            affordable = chosen.safe_to_spend >= ZERO
+            grounded["scenario_affordable"] = "true" if affordable else "false"
+        else:
+            grounded["scenario_affordable"] = "not_in_horizon"
         grounded["purchase_amount"] = grounded.get(
             "scenario_amount", str(intent.amount or ZERO)
         )
@@ -560,6 +580,13 @@ def _deterministic_copilot_answer(question: str, grounded: dict[str, Any]) -> st
             amount = grounded.get("purchase_amount") or grounded.get(
                 "scenario_amount", "?"
             )
+            if grounded.get("scenario_purchase_applied") == "false":
+                when = grounded.get("scenario_on_date", "that date")
+                return (
+                    f"A ${amount} purchase on {when} is outside this forecast "
+                    "horizon, so it was not applied and safe-to-spend stays "
+                    f"${baseline_safe}."
+                )
             affordable = grounded.get("scenario_affordable") == "true"
             verdict = "affordable" if affordable else "not affordable"
             return (

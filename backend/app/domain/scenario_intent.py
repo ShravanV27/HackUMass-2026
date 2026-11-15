@@ -321,7 +321,10 @@ def _looks_like_cut(q: str) -> bool:
 
 def _extract_amounts(text: str) -> list[Decimal]:
     found: list[Decimal] = []
+    date_spans = [match.span() for match in _ISO_DATE_RE.finditer(text)]
     for match in _MONEY_RE.finditer(text):
+        if any(start <= match.start() and match.end() <= end for start, end in date_spans):
+            continue
         raw = match.group(1).replace(",", "")
         # Skip bare percents captured without $ when followed by %
         end = match.end()

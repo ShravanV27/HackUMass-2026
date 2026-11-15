@@ -263,6 +263,7 @@ class WhatIfResponse(BaseModel):
     note: str
     purchase_date: date | None = None
     assumptions: list[str] = Field(default_factory=list)
+    purchase_applied: bool = True
 
 
 class PaymentCycleConfig(BaseModel):

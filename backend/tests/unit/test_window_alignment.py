@@ -108,9 +108,18 @@ def test_tiger_history_bounds_skip_lookback_start_day(monkeypatch) -> None:
         def __init__(self, _conn: object) -> None:
             pass
 
-        def discretionary_daily_spending(self, customer_id, *, start_at, end_at, exclude_categories):
+        def discretionary_daily_spending(
+            self,
+            customer_id,
+            *,
+            start_at,
+            end_at,
+            exclude_categories,
+            exclude_description_tokens=None,
+        ):
             captured["start_at"] = start_at
             captured["end_at"] = end_at
+            captured["exclude_description_tokens"] = list(exclude_description_tokens or [])
             return []
 
     class _Conn:
